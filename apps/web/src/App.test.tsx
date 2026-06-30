@@ -57,6 +57,30 @@ describe("App", () => {
           });
         }
 
+        if (url.endsWith("/resume-analyses/generate")) {
+          return Response.json({
+            backgroundSummary: "候选人具备前端工程经验",
+            keyProjects: ["Mock Interview"],
+            technicalStack: ["React", "FastAPI"],
+            followUpTopics: ["项目职责", "技术取舍"],
+            riskPoints: ["项目指标不清晰"],
+            unclearPoints: ["上线规模未说明"],
+            targetRoleNotes: "偏前端岗位",
+            focusTopics: ["项目表达"],
+            lowPriorityFollowUpTopics: ["弱相关运营经历"]
+          });
+        }
+
+        if (url.endsWith("/interviews") && init?.method === "POST") {
+          const body = JSON.parse(String(init.body));
+          return Response.json({
+            id: 7,
+            resumeMarkdown: body.resumeMarkdown,
+            targetRole: body.targetRole,
+            analysis: body.analysis
+          });
+        }
+
         return Response.json({}, { status: 404 });
       })
     );
@@ -107,5 +131,53 @@ describe("App", () => {
     const successMessage = await screen.findByText("AI Provider 连接测试成功");
     expect(successMessage).toBeInTheDocument();
     expect(successMessage.closest(".connectionState")).toHaveClass("success");
+  });
+
+  it("imports Markdown resume, edits generated analysis, and confirms interview", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const resumeInput = screen.getByLabelText("Markdown 简历");
+    const fileInput = screen.getByLabelText("导入 Markdown 简历");
+    const file = new File(["# 李四\n\n## 项目\n- 简历分析流程"], "resume.md", { type: "text/markdown" });
+
+    await user.upload(fileInput, file);
+
+    await waitFor(() => {
+      expect(resumeInput).toHaveValue("# 李四\n\n## 项目\n- 简历分析流程");
+    });
+    expect(screen.getByText("最近导入：resume.md")).toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/resume-analyses/generate",
+      expect.anything()
+    );
+
+    await user.click(screen.getByRole("button", { name: "生成简历分析" }));
+
+    const backgroundSummary = await screen.findByDisplayValue("候选人具备前端工程经验");
+    await user.clear(backgroundSummary);
+    await user.type(backgroundSummary, "用户编辑后的背景摘要");
+
+    const lowPriority = screen.getByLabelText("不希望重点追问的内容");
+    await user.clear(lowPriority);
+    await user.type(lowPriority, "弱相关外包经历");
+    await user.click(screen.getByRole("button", { name: "确认并保存" }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        "http://127.0.0.1:8000/interviews",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining("用户编辑后的背景摘要")
+        })
+      );
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/interviews",
+      expect.objectContaining({
+        body: expect.stringContaining("low_priority_follow_up_topics")
+      })
+    );
+    expect(await screen.findByText("简历分析已确认并保存为面试记录 #7")).toBeInTheDocument();
   });
 });

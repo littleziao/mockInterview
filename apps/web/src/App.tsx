@@ -5,6 +5,7 @@ import {
   BookOpenText,
   CheckCircle2,
   ClipboardList,
+  FileUp,
   History,
   Home,
   KeyRound,
@@ -64,6 +65,18 @@ type AIProviderTestResult = {
   message: string;
 };
 
+type ResumeAnalysis = {
+  backgroundSummary: string;
+  keyProjects: string[];
+  technicalStack: string[];
+  followUpTopics: string[];
+  riskPoints: string[];
+  unclearPoints: string[];
+  targetRoleNotes: string;
+  focusTopics: string[];
+  lowPriorityFollowUpTopics: string[];
+};
+
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 function createDraftProvider(index = 1): EditableAIProviderConfig {
@@ -76,6 +89,26 @@ function createDraftProvider(index = 1): EditableAIProviderConfig {
     hasApiKey: false,
     isConfigured: false
   };
+}
+
+function linesToList(value: string) {
+  return value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function listToLines(value: string[]) {
+  return value.join("\n");
+}
+
+function readFileAsText(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => reject(new Error("导入失败：无法读取文件"));
+    reader.readAsText(file);
+  });
 }
 
 function Navigation({
@@ -383,6 +416,117 @@ function SettingsPage() {
 }
 
 function SetupPanel() {
+  const [resumeMarkdown, setResumeMarkdown] = useState(resumePreview);
+  const [targetRole, setTargetRole] = useState("前端工程师");
+  const [analysis, setAnalysis] = useState<ResumeAnalysis | null>(null);
+  const [lastImportedFileName, setLastImportedFileName] = useState("");
+  const [fileError, setFileError] = useState("");
+  const [workflowMessage, setWorkflowMessage] = useState("");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isSavingInterview, setIsSavingInterview] = useState(false);
+
+  async function importMarkdownFile(file: File | undefined) {
+    if (!file) {
+      return;
+    }
+
+    const normalizedName = file.name.toLowerCase();
+    if (!normalizedName.endsWith(".md") && !normalizedName.endsWith(".markdown")) {
+      setFileError("只支持导入 .md 或 .markdown 文件");
+      return;
+    }
+
+    try {
+      const content = await readFileAsText(file);
+      if (!content.trim()) {
+        setFileError("导入失败：文件内容为空");
+        return;
+      }
+
+      setResumeMarkdown(content);
+      setLastImportedFileName(file.name);
+      setFileError("");
+      setWorkflowMessage("Markdown 简历已导入，请确认内容后手动生成分析");
+    } catch (error) {
+      setFileError(error instanceof Error ? error.message : "导入失败：无法读取文件");
+    }
+  }
+
+  async function generateAnalysis() {
+    if (!resumeMarkdown.trim()) {
+      setWorkflowMessage("Markdown 简历不能为空");
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setWorkflowMessage("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/resume-analyses/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resumeMarkdown,
+          targetRole
+        })
+      });
+      if (!response.ok) {
+        const detail = (await response.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(detail?.detail ?? "生成简历分析失败");
+      }
+      setAnalysis((await response.json()) as ResumeAnalysis);
+      setWorkflowMessage("简历分析已生成，可继续编辑并确认保存");
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : "生成简历分析失败");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }
+
+  async function confirmInterview() {
+    if (!analysis) {
+      setWorkflowMessage("请先生成简历分析");
+      return;
+    }
+
+    setIsSavingInterview(true);
+    setWorkflowMessage("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/interviews`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resumeMarkdown,
+          targetRole,
+          analysis: {
+            background_summary: analysis.backgroundSummary,
+            key_projects: analysis.keyProjects,
+            technical_stack: analysis.technicalStack,
+            follow_up_topics: analysis.followUpTopics,
+            risk_points: analysis.riskPoints,
+            unclear_points: analysis.unclearPoints,
+            target_role_notes: analysis.targetRoleNotes,
+            focus_topics: analysis.focusTopics,
+            low_priority_follow_up_topics: analysis.lowPriorityFollowUpTopics
+          }
+        })
+      });
+      if (!response.ok) {
+        const detail = (await response.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(detail?.detail ?? "保存面试记录失败");
+      }
+      const savedInterview = (await response.json()) as { id: number };
+      setWorkflowMessage(`简历分析已确认并保存为面试记录 #${savedInterview.id}`);
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : "保存面试记录失败");
+    } finally {
+      setIsSavingInterview(false);
+    }
+  }
+
+  function updateAnalysis(patch: Partial<ResumeAnalysis>) {
+    setAnalysis((currentAnalysis) => (currentAnalysis ? { ...currentAnalysis, ...patch } : currentAnalysis));
+  }
+
   return (
     <section className="panel setupPanel" aria-labelledby="setup-title">
       <div className="sectionHeader">
@@ -390,22 +534,38 @@ function SetupPanel() {
           <h2 id="setup-title">新建面试</h2>
           <p>粘贴 Markdown 简历，确认分析后进入连续对话式模拟面试。</p>
         </div>
-        <button className="primaryButton" type="button">
+        <button className="primaryButton" disabled={isAnalyzing} onClick={generateAnalysis} type="button">
           <Sparkles size={16} aria-hidden="true" />
-          生成简历分析
+          {isAnalyzing ? "分析中" : "生成简历分析"}
         </button>
       </div>
 
       <div className="workspaceGrid">
         <label className="resumeEditor">
           <span>Markdown 简历</span>
-          <textarea defaultValue={resumePreview} rows={12} />
+          <textarea onChange={(event) => setResumeMarkdown(event.target.value)} rows={12} value={resumeMarkdown} />
         </label>
 
         <div className="setupControls">
+          <label className="fileImportControl">
+            <span>导入 Markdown 简历</span>
+            <input
+              accept=".md,.markdown"
+              onChange={(event) => {
+                void importMarkdownFile(event.target.files?.[0]);
+                event.currentTarget.value = "";
+              }}
+              type="file"
+            />
+          </label>
+          <div className={fileError ? "importState failure" : "importState"}>
+            <FileUp size={16} aria-hidden="true" />
+            <span>{fileError || (lastImportedFileName ? `最近导入：${lastImportedFileName}` : "尚未导入文件")}</span>
+          </div>
+
           <label>
             <span>目标岗位</span>
-            <input defaultValue="前端工程师" />
+            <input onChange={(event) => setTargetRole(event.target.value)} value={targetRole} />
           </label>
 
           <fieldset>
@@ -437,6 +597,98 @@ function SetupPanel() {
           </div>
         </div>
       </div>
+
+      {workflowMessage ? <div className="workflowMessage">{workflowMessage}</div> : null}
+
+      {analysis ? (
+        <div className="analysisEditor" aria-label="简历分析确认">
+          <div className="analysisEditorHeader">
+            <div>
+              <h3>简历分析确认</h3>
+              <p>确认前可以修正 AI 对背景、项目和追问方向的理解。</p>
+            </div>
+            <button className="primaryButton" disabled={isSavingInterview} onClick={confirmInterview} type="button">
+              <Save size={16} aria-hidden="true" />
+              {isSavingInterview ? "保存中" : "确认并保存"}
+            </button>
+          </div>
+
+          <div className="analysisGrid">
+            <label>
+              <span>背景摘要</span>
+              <textarea
+                onChange={(event) => updateAnalysis({ backgroundSummary: event.target.value })}
+                rows={4}
+                value={analysis.backgroundSummary}
+              />
+            </label>
+            <label>
+              <span>关键项目</span>
+              <textarea
+                onChange={(event) => updateAnalysis({ keyProjects: linesToList(event.target.value) })}
+                rows={4}
+                value={listToLines(analysis.keyProjects)}
+              />
+            </label>
+            <label>
+              <span>技术栈</span>
+              <textarea
+                onChange={(event) => updateAnalysis({ technicalStack: linesToList(event.target.value) })}
+                rows={4}
+                value={listToLines(analysis.technicalStack)}
+              />
+            </label>
+            <label>
+              <span>可能追问点</span>
+              <textarea
+                onChange={(event) => updateAnalysis({ followUpTopics: linesToList(event.target.value) })}
+                rows={4}
+                value={listToLines(analysis.followUpTopics)}
+              />
+            </label>
+            <label>
+              <span>风险点</span>
+              <textarea
+                onChange={(event) => updateAnalysis({ riskPoints: linesToList(event.target.value) })}
+                rows={4}
+                value={listToLines(analysis.riskPoints)}
+              />
+            </label>
+            <label>
+              <span>表达不清之处</span>
+              <textarea
+                onChange={(event) => updateAnalysis({ unclearPoints: linesToList(event.target.value) })}
+                rows={4}
+                value={listToLines(analysis.unclearPoints)}
+              />
+            </label>
+            <label>
+              <span>目标岗位补充说明</span>
+              <textarea
+                onChange={(event) => updateAnalysis({ targetRoleNotes: event.target.value })}
+                rows={4}
+                value={analysis.targetRoleNotes}
+              />
+            </label>
+            <label>
+              <span>希望重点练习的内容</span>
+              <textarea
+                onChange={(event) => updateAnalysis({ focusTopics: linesToList(event.target.value) })}
+                rows={4}
+                value={listToLines(analysis.focusTopics)}
+              />
+            </label>
+            <label>
+              <span>不希望重点追问的内容</span>
+              <textarea
+                onChange={(event) => updateAnalysis({ lowPriorityFollowUpTopics: linesToList(event.target.value) })}
+                rows={4}
+                value={listToLines(analysis.lowPriorityFollowUpTopics)}
+              />
+            </label>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

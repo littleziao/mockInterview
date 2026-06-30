@@ -338,6 +338,75 @@ fieldset {
   margin-top: 3px;
 }
 
+.fileImportControl input {
+  height: auto;
+  padding: 9px 10px;
+}
+
+.importState,
+.workflowMessage {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #d8dfda;
+  border-radius: 8px;
+  color: #45524d;
+  background: #f7f9f6;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.importState.failure {
+  border-color: #ead0c8;
+  color: #8b3d27;
+  background: #fff3ef;
+}
+
+.workflowMessage {
+  margin-top: 18px;
+}
+
+.analysisEditor {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid #e1e7e2;
+}
+
+.analysisEditorHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+}
+
+.analysisEditorHeader h3 {
+  font-size: 16px;
+}
+
+.analysisEditorHeader p {
+  margin-top: 5px;
+  color: #6f7b76;
+  font-size: 13px;
+}
+
+.analysisGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.analysisGrid label:first-child,
+.analysisGrid label:nth-child(7) {
+  grid-column: span 3;
+}
+
+.analysisGrid textarea {
+  min-height: 112px;
+  padding: 12px;
+}
+
 .settingsPanel {
   padding: 22px;
 }
@@ -590,9 +659,17 @@ fieldset {
   }
 
   .topBar,
-  .sectionHeader {
+  .sectionHeader,
+  .analysisEditorHeader {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .analysisGrid,
+  .analysisGrid label:first-child,
+  .analysisGrid label:nth-child(7) {
+    grid-template-columns: 1fr;
+    grid-column: span 1;
   }
 
   .rightRail {
