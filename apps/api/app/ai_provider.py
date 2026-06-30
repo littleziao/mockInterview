@@ -11,6 +11,19 @@ from .ai_settings import AIProviderSettings
 from .resume_analysis import ResumeAnalysis, ResumeAnalysisValidationError, validate_resume_analysis
 
 
+RESUME_ANALYSIS_JSON_EXAMPLE = {
+    "background_summary": "候选人有 3 年前端工程经验，主要参与本地 AI 工具和后台系统建设。",
+    "key_projects": ["Mock Interview：负责简历分析流程和 AI Provider 接入"],
+    "technical_stack": ["React", "TypeScript", "FastAPI", "SQLite"],
+    "follow_up_topics": ["项目职责边界", "AI 输出结构化校验", "前后端接口设计"],
+    "risk_points": ["项目结果指标描述不够明确"],
+    "unclear_points": ["团队规模和上线后的使用情况需要澄清"],
+    "target_role_notes": "如果目标岗位是前端工程师，应重点关注工程化、组件设计和接口协作经验。",
+    "focus_topics": ["项目经验表达", "技术选型取舍"],
+    "low_priority_follow_up_topics": ["与目标岗位弱相关的零散经历"],
+}
+
+
 @dataclass(frozen=True)
 class ProviderTestResult:
     status: str
@@ -97,9 +110,12 @@ class OpenAICompatibleProvider:
                         "role": "user",
                         "content": (
                             "请基于 Markdown 简历和目标岗位生成结构化简历分析。"
-                            "JSON 字段必须包含 background_summary, key_projects, "
+                            "必须只返回一个 JSON object。JSON 字段必须包含 background_summary, key_projects, "
                             "technical_stack, follow_up_topics, risk_points, unclear_points, "
                             "target_role_notes, focus_topics, low_priority_follow_up_topics。"
+                            "所有列表字段必须返回字符串数组，不要返回字符串、Markdown 列表或解释文字。"
+                            "\nJSON 示例："
+                            f"\n{json.dumps(RESUME_ANALYSIS_JSON_EXAMPLE, ensure_ascii=False)}"
                             f"\n目标岗位：{target_role or '未填写'}"
                             f"\nMarkdown 简历：\n{resume_markdown}"
                         ),
