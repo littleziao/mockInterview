@@ -8,6 +8,16 @@ from typing import Protocol
 import httpx
 
 from .ai_settings import AIProviderSettings
+from .interview_session import (
+    DEFAULT_MAIN_QUESTIONS,
+    DEFAULT_MAX_FOLLOW_UPS,
+    InterviewSession,
+    InterviewerAction,
+    InterviewerActionValidationError,
+    answers_in_current_main_question,
+    current_main_question_index,
+    validate_interviewer_action,
+)
 from .resume_analysis import ResumeAnalysis, ResumeAnalysisValidationError, validate_resume_analysis
 
 
@@ -24,6 +34,12 @@ RESUME_ANALYSIS_JSON_EXAMPLE = {
 }
 
 
+INTERVIEWER_ACTION_JSON_EXAMPLE = {
+    "kind": "follow_up",
+    "message": "可以再展开说说这个方案的关键取舍和上线后的实际效果吗？",
+}
+
+
 @dataclass(frozen=True)
 class ProviderTestResult:
     status: str
@@ -35,6 +51,16 @@ class AIProvider(Protocol):
         raise NotImplementedError
 
     def analyze_resume(self, *, resume_markdown: str, target_role: str) -> ResumeAnalysis:
+        raise NotImplementedError
+
+    def generate_next_interviewer_action(
+        self,
+        *,
+        session: InterviewSession,
+        analysis: ResumeAnalysis,
+        target_role: str,
+        starting: bool,
+    ) -> InterviewerAction:
         raise NotImplementedError
 
 
@@ -65,6 +91,44 @@ class FakeAIProvider:
                 "focus_topics": ["项目经验表达", "技术深度"],
                 "low_priority_follow_up_topics": ["与目标岗位弱相关的零散经历"],
             }
+        )
+
+    def generate_next_interviewer_action(
+        self,
+        *,
+        session: InterviewSession,
+        analysis: ResumeAnalysis,
+        target_role: str,
+        starting: bool,
+    ) -> InterviewerAction:
+        if self.settings.base_url == "fake://invalid-action":
+            return validate_interviewer_action({"kind": "unknown-kind", "message": "结构校验失败"})
+
+        if starting:
+            return validate_interviewer_action(
+                {"kind": "main_question", "message": "先简单自我介绍，并讲讲最近一个最有代表性的项目。"}
+            )
+
+        if session.main_question_count >= DEFAULT_MAIN_QUESTIONS:
+            return validate_interviewer_action(
+                {"kind": "clarify", "message": "以上是我想了解的主要内容，你还有什么想补充的吗？"}
+            )
+
+        current_index = current_main_question_index(session)
+        answers = answers_in_current_main_question(session.transcript, current_index)
+
+        if answers <= 1:
+            return validate_interviewer_action(
+                {"kind": "follow_up", "message": "能展开说说里面的关键取舍，以及上线后的实际效果吗？"}
+            )
+
+        if answers == 2:
+            return validate_interviewer_action(
+                {"kind": "clarify", "message": "我换个更小的角度：先聚焦一个具体场景，你是怎么定位问题的？"}
+            )
+
+        return validate_interviewer_action(
+            {"kind": "main_question", "message": "我们换个方向，聊聊一个系统设计相关的问题。"}
         )
 
 
@@ -130,6 +194,83 @@ class OpenAICompatibleProvider:
         content = payload["choices"][0]["message"]["content"]
         return validate_resume_analysis(_load_json_content(content))
 
+    def generate_next_interviewer_action(
+        self,
+        *,
+        session: InterviewSession,
+        analysis: ResumeAnalysis,
+        target_role: str,
+        starting: bool,
+    ) -> InterviewerAction:
+        endpoint = self.settings.base_url.rstrip("/") + "/chat/completions"
+        response = httpx.post(
+            endpoint,
+            headers={"Authorization": f"Bearer {self.settings.api_key}"},
+            json={
+                "model": self.settings.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是模拟面试中的真人面试官，目标是围绕候选人的简历进行连续对话式面试。"
+                            "一次只提出一个问题。根据候选人回答决定追问、轻量澄清、缩小范围或换题。"
+                            "不要在面试中讲解知识点、给出参考答案或扮演教练。只返回 JSON。"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": self._build_interview_action_prompt(
+                            analysis=analysis,
+                            target_role=target_role,
+                            session=session,
+                            starting=starting,
+                        ),
+                    },
+                ],
+                "response_format": {"type": "json_object"},
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        content = payload["choices"][0]["message"]["content"]
+        try:
+            return validate_interviewer_action(_load_json_content(content))
+        except ResumeAnalysisValidationError as error:
+            raise InterviewerActionValidationError("AI 返回的面试官动作结构无效") from error
+
+    def _build_interview_action_prompt(
+        self,
+        *,
+        analysis: ResumeAnalysis,
+        target_role: str,
+        session: InterviewSession,
+        starting: bool,
+    ) -> str:
+        transcript_text = "\n".join(
+            f"{'面试官' if message.role == 'interviewer' else '候选人'}：{message.content}"
+            for message in session.transcript
+        ) or "（尚未开始对话）"
+
+        return (
+            "请基于已确认的简历分析，以真人面试官视角产生下一步动作。"
+            "只返回一个 JSON object，字段包含 kind 与 message。"
+            "kind 只能是 main_question（新主问题）、follow_up（追问）或 clarify（轻量澄清/换问法/缩小范围）。"
+            "message 是面试官一句话，一次只问一个问题，不要给出答案或讲解。"
+            f"\nJSON 示例：\n{json.dumps(INTERVIEWER_ACTION_JSON_EXAMPLE, ensure_ascii=False)}"
+            f"\n面试风格：{'学习梳理面' if session.style == 'study' else '压力面'}"
+            f"\n目标岗位：{target_role or '未填写'}"
+            f"\n背景摘要：{analysis.background_summary}"
+            f"\n关键项目：{', '.join(analysis.key_projects)}"
+            f"\n希望重点练习：{', '.join(analysis.focus_topics) or '无'}"
+            f"\n不希望重点追问（低优先级，非禁问）：{', '.join(analysis.low_priority_follow_up_topics) or '无'}"
+            f"\n已提出主问题数：{session.main_question_count}"
+            f"\n当前主问题已追问次数：{session.current_main_question_follow_ups}"
+            f"\n本场默认上限：{DEFAULT_MAIN_QUESTIONS} 个主问题，每个主问题最多 {DEFAULT_MAX_FOLLOW_UPS} 次追问。"
+            f"\n{'这是开场，请提出第一个主问题。' if starting else '请根据候选人最新回答决定下一步动作。'}"
+            f"\n对话历史：\n{transcript_text}"
+        )
+
 
 def _load_json_content(content: str) -> object:
     stripped_content = content.strip()
@@ -167,3 +308,22 @@ def analyze_resume_with_provider(
         raise ValueError("请先保存供应商名称、baseUrl、apiKey 和 model")
 
     return build_ai_provider(settings).analyze_resume(resume_markdown=resume_markdown, target_role=target_role)
+
+
+def generate_next_interviewer_action_with_provider(
+    settings: AIProviderSettings,
+    *,
+    session: InterviewSession,
+    analysis: ResumeAnalysis,
+    target_role: str,
+    starting: bool,
+) -> InterviewerAction:
+    if not settings.is_configured:
+        raise ValueError("请先保存供应商名称、baseUrl、apiKey 和 model")
+
+    return build_ai_provider(settings).generate_next_interviewer_action(
+        session=session,
+        analysis=analysis,
+        target_role=target_role,
+        starting=starting,
+    )
