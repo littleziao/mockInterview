@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+.vite/
+tmp/
+
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+
+.env
+.env.*
+!.env.example
+data/*.db
+data/*.sqlite
+data/*.sqlite3
