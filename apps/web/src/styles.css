@@ -228,6 +228,20 @@ h1 {
   font-weight: 700;
 }
 
+.dangerButton {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  gap: 8px;
+  padding: 0 14px;
+  border: 1px solid #ebc8bd;
+  border-radius: 8px;
+  color: #8b3d27;
+  background: #fff7f4;
+  font-size: 14px;
+  font-weight: 700;
+}
+
 .workspaceGrid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 280px;
@@ -330,8 +344,62 @@ fieldset {
 
 .settingsGrid {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 0.8fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
+}
+
+.providerSettingsLayout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 18px;
+}
+
+.providerList {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.providerItem {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid #d6dfda;
+  border-radius: 8px;
+  background: #fbfcfa;
+  color: #45524d;
+  text-align: left;
+}
+
+.providerItem.active {
+  border-color: #1f6f63;
+  background: #edf8f4;
+  color: #174f47;
+  box-shadow: inset 4px 0 0 #1f6f63;
+}
+
+.providerItem span,
+.providerItem small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.providerItem span {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.providerItem small {
+  color: #6f7b76;
+  font-size: 12px;
+}
+
+.providerAddButton {
+  justify-content: center;
+  margin-top: 4px;
 }
 
 .settingsActions {
@@ -358,6 +426,17 @@ fieldset {
   border-color: #b8d8ca;
   color: #174f47;
   background: #eef8f3;
+}
+
+.sectionHeader .connectionState.success {
+  min-height: 52px;
+  padding: 0 16px;
+  border-color: #63b68f;
+  background: #e5f8ee;
+  color: #0f5f45;
+  font-size: 15px;
+  font-weight: 800;
+  box-shadow: 0 12px 28px rgba(31, 111, 99, 0.16);
 }
 
 .connectionState.failure,
@@ -490,7 +569,8 @@ fieldset {
   .appShell,
   .workspaceGrid,
   .roundList,
-  .settingsGrid {
+  .settingsGrid,
+  .providerSettingsLayout {
     grid-template-columns: 1fr;
   }
 

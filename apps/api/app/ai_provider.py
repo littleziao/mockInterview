@@ -63,6 +63,6 @@ def build_ai_provider(settings: AIProviderSettings) -> AIProvider:
 
 def test_ai_provider_connection(settings: AIProviderSettings) -> ProviderTestResult:
     if not settings.is_configured:
-        return ProviderTestResult(status="missing", message="请先保存 baseUrl、apiKey 和 model")
+        return ProviderTestResult(status="missing", message="请先保存供应商名称、baseUrl、apiKey 和 model")
 
     return build_ai_provider(settings).test_connection()
