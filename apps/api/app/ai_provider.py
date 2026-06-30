@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Protocol
 
 import httpx
 
 from .ai_settings import AIProviderSettings
-from .resume_analysis import ResumeAnalysis, validate_resume_analysis
+from .resume_analysis import ResumeAnalysis, ResumeAnalysisValidationError, validate_resume_analysis
 
 
 @dataclass(frozen=True)
@@ -111,7 +112,19 @@ class OpenAICompatibleProvider:
         response.raise_for_status()
         payload = response.json()
         content = payload["choices"][0]["message"]["content"]
-        return validate_resume_analysis(json.loads(content))
+        return validate_resume_analysis(_load_json_content(content))
+
+
+def _load_json_content(content: str) -> object:
+    stripped_content = content.strip()
+    fenced_match = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped_content, flags=re.DOTALL)
+    if fenced_match:
+        stripped_content = fenced_match.group(1).strip()
+
+    try:
+        return json.loads(stripped_content)
+    except json.JSONDecodeError as error:
+        raise ResumeAnalysisValidationError("AI 返回的简历分析结构无效") from error
 
 
 def build_ai_provider(settings: AIProviderSettings) -> AIProvider:

@@ -3,6 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from apps.api.app.main import app
+from apps.api.app.resume_analysis import validate_resume_analysis
 
 
 def _configure_provider(client: TestClient, base_url: str = "fake://success") -> None:
@@ -39,6 +40,30 @@ def test_resume_analysis_rejects_invalid_ai_structure(monkeypatch, tmp_path: Pat
 
     assert response.status_code == 502
     assert response.json() == {"detail": "AI 返回的简历分析结构无效"}
+
+
+def test_resume_analysis_accepts_common_ai_key_and_list_variants() -> None:
+    analysis = validate_resume_analysis(
+        {
+            "analysis": {
+                "backgroundSummary": "候选人有全栈项目经验",
+                "关键项目": "Mock Interview\nAI Provider 设置",
+                "technicalStack": ["React", "FastAPI"],
+                "可能追问点": ["项目职责", "技术取舍"],
+                "风险点": "指标不够明确",
+                "表达不清之处": "",
+                "targetRoleNotes": "前端工程师",
+                "希望重点练习的内容": "项目复盘",
+                "不希望重点追问的内容": "弱相关经历",
+            }
+        }
+    )
+
+    assert analysis.background_summary == "候选人有全栈项目经验"
+    assert analysis.key_projects == ["Mock Interview", "AI Provider 设置"]
+    assert analysis.risk_points == ["指标不够明确"]
+    assert analysis.unclear_points == []
+    assert analysis.low_priority_follow_up_topics == ["弱相关经历"]
 
 
 def test_user_edits_confirms_and_reads_saved_resume_analysis(monkeypatch, tmp_path: Path) -> None:
