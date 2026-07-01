@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 
@@ -101,7 +102,10 @@ def _unwrap_review_payload(data: object) -> object:
 
 def _coerce_list(value: object) -> list[str]:
     if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
+        return [_stringify_review_item(item) for item in value if _stringify_review_item(item)]
+
+    if isinstance(value, dict):
+        return [_stringify_review_item(value)] if _stringify_review_item(value) else []
 
     if isinstance(value, str):
         return [
@@ -116,11 +120,67 @@ def _coerce_list(value: object) -> list[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
+def _stringify_review_item(value: object) -> str:
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for item_value in value.values():
+            if isinstance(item_value, list):
+                parts.extend(str(part).strip() for part in item_value if str(part).strip())
+            elif isinstance(item_value, dict):
+                nested = _stringify_review_item(item_value)
+                if nested:
+                    parts.append(nested)
+            elif item_value is not None and str(item_value).strip():
+                parts.append(str(item_value).strip())
+        return "；".join(parts)
+
+    return str(value).strip() if value is not None else ""
+
+
 def _coerce_score(value: object) -> int:
+    if isinstance(value, dict):
+        nested_value = next(
+            (
+                value[key]
+                for key in ("score", "value", "rating", "分数", "评分", "得分")
+                if key in value
+            ),
+            None,
+        )
+        return _coerce_score(nested_value)
+
     if isinstance(value, (int, float)):
-        return int(value)
+        numeric_value = float(value)
+        if numeric_value > 5:
+            return max(1, min(5, round(numeric_value / 20)))
+        return int(numeric_value)
 
     text = str(value).strip()
+    qualitative_scores = {
+        "优秀": 5,
+        "很好": 5,
+        "良好": 4,
+        "较好": 4,
+        "一般": 3,
+        "中等": 3,
+        "较弱": 2,
+        "不足": 2,
+        "很弱": 1,
+    }
+    if text in qualitative_scores:
+        return qualitative_scores[text]
+
+    fraction_match = re.search(r"(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)", text)
+    if fraction_match:
+        numerator = float(fraction_match.group(1))
+        denominator = float(fraction_match.group(2))
+        if denominator > 0:
+            return max(1, min(5, round(numerator / denominator * 5)))
+
+    number_match = re.search(r"\d+(?:\.\d+)?", text)
+    if number_match:
+        return _coerce_score(float(number_match.group(0)))
+
     try:
         return int(float(text))
     except ValueError:
@@ -151,8 +211,15 @@ def _normalize_ability_scores(value: object) -> list[dict[str, object]]:
             continue
         by_dimension[dimension] = {
             "dimension": dimension,
-            "score": _coerce_score(item.get("score") or item.get("分数")),
-            "rationale": str(item.get("rationale") or item.get("reason") or item.get("说明") or "").strip()
+            "score": _coerce_score(item),
+            "rationale": str(
+                item.get("rationale")
+                or item.get("reason")
+                or item.get("说明")
+                or item.get("理由")
+                or item.get("comment")
+                or ""
+            ).strip()
             or "基于本次面试表现给出的能力评分。",
         }
 

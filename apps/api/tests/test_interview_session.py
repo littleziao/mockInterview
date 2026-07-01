@@ -450,6 +450,47 @@ def test_validate_interview_review_accepts_common_variants() -> None:
     assert [score.dimension for score in review.ability_scores] == list(ABILITY_DIMENSIONS)
 
 
+def test_validate_interview_review_accepts_provider_score_object_variants() -> None:
+    review = validate_interview_review(
+        {
+            "interviewReview": {
+                "overallEvaluation": "整体完成度不错，但回答证据和结构还可以加强。",
+                "strengths": [{"title": "项目真实", "detail": "能围绕真实项目展开"}],
+                "problems": [{"issue": "指标不足", "suggestion": "补充量化结果"}],
+                "questionReviews": [
+                    {
+                        "question": "介绍项目",
+                        "comment": "回答覆盖背景，但技术取舍展开不足。",
+                    }
+                ],
+                "expression_examples": [
+                    {
+                        "before": "我做了这个模块",
+                        "after": "我负责模块设计、接口契约和异常路径测试。",
+                    }
+                ],
+                "reference_answers": [{"answer": "示范性回答：可以先讲背景，再讲行动和结果。"}],
+                "knowledge_points": [{"topic": "结构化表达", "notes": ["STAR", "指标"]}],
+                "study_plan": {"step1": "整理项目指标", "step2": "练习技术取舍"},
+                "next_steps": {"suggestion": "下一次重点练习项目深挖。"},
+                "scores": {
+                    "专业知识准确性": {"score": 80, "reason": "概念基本准确"},
+                    "项目经验表达": {"评分": 4, "说明": "能说明项目职责"},
+                    "问题分析能力": {"value": 3, "rationale": "拆解过程还可以更细"},
+                    "技术深度": {"分数": "4/5", "理由": "能说方案但机制不足"},
+                    "沟通结构化": {"score": "良好", "reason": "表达有主线"},
+                    "岗位匹配度": 4,
+                },
+            }
+        }
+    )
+
+    assert review.highlights[0]
+    assert review.learning_framework
+    assert [score.dimension for score in review.ability_scores] == list(ABILITY_DIMENSIONS)
+    assert [score.score for score in review.ability_scores] == [4, 4, 3, 4, 4, 4]
+
+
 def test_follow_up_beyond_limit_uses_real_new_main_question_fallback() -> None:
     session = InterviewSession(
         id=1,
