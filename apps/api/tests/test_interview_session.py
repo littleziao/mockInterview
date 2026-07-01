@@ -123,6 +123,20 @@ def test_starting_a_single_round_interview_returns_first_main_question(monkeypat
     assert first["mainQuestionIndex"] == 0
 
 
+def test_starting_multiple_sessions_uses_autoincrement_ids(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        interview_id = _create_confirmed_interview(client)
+        first_session = _start_session(client, interview_id)
+        second_session = _start_session(client, interview_id)
+
+    assert first_session["id"] > 0
+    assert second_session["id"] > first_session["id"]
+
+
 def test_default_interview_style_is_study(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
     monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
@@ -273,6 +287,20 @@ def test_invalid_ai_action_structure_returns_502(monkeypatch, tmp_path: Path) ->
 
     assert response.status_code == 502
     assert response.json() == {"detail": "AI 返回的面试官动作结构无效"}
+    assert _interview_session_count() == 0
+
+
+def test_provider_http_failure_returns_502_without_creating_session(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client, "http://127.0.0.1:9")
+        interview_id = _create_confirmed_interview(client)
+        response = client.post(f"/interviews/{interview_id}/sessions", json={"style": "study"})
+
+    assert response.status_code == 502
+    assert response.json()["detail"].startswith("AI Provider 调用失败")
     assert _interview_session_count() == 0
 
 

@@ -214,24 +214,43 @@ def save_session(session: InterviewSession) -> InterviewSession:
         ensure_ascii=False,
     )
     with connect() as connection:
-        cursor = connection.execute(
-            """
-            INSERT INTO interview_sessions (
-                id, interview_id, style, status, transcript_json,
-                main_question_count, current_main_question_follow_ups
+        if session.id:
+            cursor = connection.execute(
+                """
+                INSERT INTO interview_sessions (
+                    id, interview_id, style, status, transcript_json,
+                    main_question_count, current_main_question_follow_ups
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session.id,
+                    session.interview_id,
+                    session.style,
+                    session.status,
+                    transcript_json,
+                    session.main_question_count,
+                    session.current_main_question_follow_ups,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                session.id,
-                session.interview_id,
-                session.style,
-                session.status,
-                transcript_json,
-                session.main_question_count,
-                session.current_main_question_follow_ups,
-            ),
-        )
+        else:
+            cursor = connection.execute(
+                """
+                INSERT INTO interview_sessions (
+                    interview_id, style, status, transcript_json,
+                    main_question_count, current_main_question_follow_ups
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session.interview_id,
+                    session.style,
+                    session.status,
+                    transcript_json,
+                    session.main_question_count,
+                    session.current_main_question_follow_ups,
+                ),
+            )
         inserted_id = int(cursor.lastrowid or session.id)
 
     if session.id:

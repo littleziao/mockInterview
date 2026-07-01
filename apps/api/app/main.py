@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .ai_provider import (
+    AIProviderRequestError,
     analyze_resume_with_provider,
     generate_next_interviewer_action_with_provider,
     test_ai_provider_connection,
@@ -229,6 +230,8 @@ def post_resume_analysis(payload: GenerateResumeAnalysisPayload) -> ResumeAnalys
         )
     except ResumeAnalysisValidationError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
+    except AIProviderRequestError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -351,6 +354,8 @@ def post_interview_session(interview_id: int, payload: StartSessionPayload | Non
         )
     except InterviewerActionValidationError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
+    except AIProviderRequestError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -421,6 +426,8 @@ def post_interview_session_answer(
             session_with_answer, resolved_action
         )
     except InterviewerActionValidationError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except AIProviderRequestError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

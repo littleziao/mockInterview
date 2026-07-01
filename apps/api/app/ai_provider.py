@@ -46,6 +46,10 @@ class ProviderTestResult:
     message: str
 
 
+class AIProviderRequestError(ValueError):
+    pass
+
+
 class AIProvider(Protocol):
     def test_connection(self) -> ProviderTestResult:
         raise NotImplementedError
@@ -157,41 +161,47 @@ class OpenAICompatibleProvider:
 
     def analyze_resume(self, *, resume_markdown: str, target_role: str) -> ResumeAnalysis:
         endpoint = self.settings.base_url.rstrip("/") + "/chat/completions"
-        response = httpx.post(
-            endpoint,
-            headers={"Authorization": f"Bearer {self.settings.api_key}"},
-            json={
-                "model": self.settings.model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "你是简历驱动模拟面试系统的后端分析器。"
-                            "只返回 JSON，不要返回 Markdown 或解释。"
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            "请基于 Markdown 简历和目标岗位生成结构化简历分析。"
-                            "必须只返回一个 JSON object。JSON 字段必须包含 background_summary, key_projects, "
-                            "technical_stack, follow_up_topics, risk_points, unclear_points, "
-                            "target_role_notes, focus_topics, low_priority_follow_up_topics。"
-                            "所有列表字段必须返回字符串数组，不要返回字符串、Markdown 列表或解释文字。"
-                            "\nJSON 示例："
-                            f"\n{json.dumps(RESUME_ANALYSIS_JSON_EXAMPLE, ensure_ascii=False)}"
-                            f"\n目标岗位：{target_role or '未填写'}"
-                            f"\nMarkdown 简历：\n{resume_markdown}"
-                        ),
-                    },
-                ],
-                "response_format": {"type": "json_object"},
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        content = payload["choices"][0]["message"]["content"]
+        try:
+            response = httpx.post(
+                endpoint,
+                headers={"Authorization": f"Bearer {self.settings.api_key}"},
+                json={
+                    "model": self.settings.model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "你是简历驱动模拟面试系统的后端分析器。"
+                                "只返回 JSON，不要返回 Markdown 或解释。"
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                "请基于 Markdown 简历和目标岗位生成结构化简历分析。"
+                                "必须只返回一个 JSON object。JSON 字段必须包含 background_summary, key_projects, "
+                                "technical_stack, follow_up_topics, risk_points, unclear_points, "
+                                "target_role_notes, focus_topics, low_priority_follow_up_topics。"
+                                "所有列表字段必须返回字符串数组，不要返回字符串、Markdown 列表或解释文字。"
+                                "\nJSON 示例："
+                                f"\n{json.dumps(RESUME_ANALYSIS_JSON_EXAMPLE, ensure_ascii=False)}"
+                                f"\n目标岗位：{target_role or '未填写'}"
+                                f"\nMarkdown 简历：\n{resume_markdown}"
+                            ),
+                        },
+                    ],
+                    "response_format": {"type": "json_object"},
+                },
+                timeout=30,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            content = payload["choices"][0]["message"]["content"]
+        except httpx.HTTPError as error:
+            raise AIProviderRequestError(f"AI Provider 调用失败：{error}") from error
+        except (KeyError, IndexError, TypeError, ValueError) as error:
+            raise ResumeAnalysisValidationError("AI 返回的简历分析结构无效") from error
+
         return validate_resume_analysis(_load_json_content(content))
 
     def generate_next_interviewer_action(
@@ -203,39 +213,43 @@ class OpenAICompatibleProvider:
         starting: bool,
     ) -> InterviewerAction:
         endpoint = self.settings.base_url.rstrip("/") + "/chat/completions"
-        response = httpx.post(
-            endpoint,
-            headers={"Authorization": f"Bearer {self.settings.api_key}"},
-            json={
-                "model": self.settings.model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "你是模拟面试中的真人面试官，目标是围绕候选人的简历进行连续对话式面试。"
-                            "一次只提出一个问题。根据候选人回答决定追问、轻量澄清、缩小范围或换题。"
-                            "不要在面试中讲解知识点、给出参考答案或扮演教练。只返回 JSON。"
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": self._build_interview_action_prompt(
-                            analysis=analysis,
-                            target_role=target_role,
-                            session=session,
-                            starting=starting,
-                        ),
-                    },
-                ],
-                "response_format": {"type": "json_object"},
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        content = payload["choices"][0]["message"]["content"]
         try:
+            response = httpx.post(
+                endpoint,
+                headers={"Authorization": f"Bearer {self.settings.api_key}"},
+                json={
+                    "model": self.settings.model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "你是模拟面试中的真人面试官，目标是围绕候选人的简历进行连续对话式面试。"
+                                "一次只提出一个问题。根据候选人回答决定追问、轻量澄清、缩小范围或换题。"
+                                "不要在面试中讲解知识点、给出参考答案或扮演教练。只返回 JSON。"
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": self._build_interview_action_prompt(
+                                analysis=analysis,
+                                target_role=target_role,
+                                session=session,
+                                starting=starting,
+                            ),
+                        },
+                    ],
+                    "response_format": {"type": "json_object"},
+                },
+                timeout=30,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            content = payload["choices"][0]["message"]["content"]
             return validate_interviewer_action(_load_json_content(content))
+        except httpx.HTTPError as error:
+            raise AIProviderRequestError(f"AI Provider 调用失败：{error}") from error
+        except (KeyError, IndexError, TypeError, ValueError) as error:
+            raise InterviewerActionValidationError("AI 返回的面试官动作结构无效") from error
         except ResumeAnalysisValidationError as error:
             raise InterviewerActionValidationError("AI 返回的面试官动作结构无效") from error
 
