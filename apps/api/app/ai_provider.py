@@ -77,6 +77,69 @@ class AIProviderRequestError(ValueError):
     pass
 
 
+def _provider_context(settings: AIProviderSettings, endpoint: str) -> str:
+    provider_name = settings.name or settings.id or "未命名供应商"
+    model = settings.model or "未配置模型"
+    return f"供应商={provider_name}，模型={model}，端点={endpoint}"
+
+
+def _stringify_provider_error_value(value: object) -> str:
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key in ("message", "detail", "code", "type", "error"):
+            item = value.get(key)
+            if item is not None and str(item).strip():
+                parts.append(f"{key}={_stringify_provider_error_value(item)}")
+        if parts:
+            return "；".join(parts)
+        return json.dumps(value, ensure_ascii=False)
+
+    if isinstance(value, list):
+        return "；".join(_stringify_provider_error_value(item) for item in value if str(item).strip())
+
+    return str(value).strip()
+
+
+def _extract_provider_error_detail(response: httpx.Response) -> str:
+    body_text = response.text.strip()
+    try:
+        body = response.json()
+    except ValueError:
+        return body_text[:1000] if body_text else response.reason_phrase
+
+    if isinstance(body, dict):
+        for key in ("error", "message", "detail"):
+            if key in body:
+                detail = _stringify_provider_error_value(body[key])
+                return detail[:1000] if detail else response.reason_phrase
+        return json.dumps(body, ensure_ascii=False)[:1000]
+
+    detail = _stringify_provider_error_value(body)
+    return detail[:1000] if detail else response.reason_phrase
+
+
+def _raise_provider_http_error(response: httpx.Response, settings: AIProviderSettings, endpoint: str) -> None:
+    if response.is_success:
+        return
+
+    detail = _extract_provider_error_detail(response)
+    raise AIProviderRequestError(
+        f"模型服务返回错误（HTTP {response.status_code}，{_provider_context(settings, endpoint)}）：{detail}"
+    )
+
+
+def _format_provider_transport_error(error: httpx.HTTPError, settings: AIProviderSettings, endpoint: str) -> str:
+    raw_message = str(error).strip() or error.__class__.__name__
+    if "SSL" in raw_message or "TLS" in raw_message:
+        failure_kind = "TLS/SSL 握手失败"
+    elif isinstance(error, httpx.TimeoutException):
+        failure_kind = "请求超时"
+    else:
+        failure_kind = "网络连接失败"
+
+    return f"AI Provider 网络连接失败（{failure_kind}，{_provider_context(settings, endpoint)}）：{raw_message}"
+
+
 class AIProvider(Protocol):
     def test_connection(self) -> ProviderTestResult:
         raise NotImplementedError
@@ -233,9 +296,14 @@ class OpenAICompatibleProvider:
                 },
                 timeout=10,
             )
-            response.raise_for_status()
+            _raise_provider_http_error(response, self.settings, endpoint)
+        except AIProviderRequestError as error:
+            return ProviderTestResult(status="failure", message=str(error))
         except httpx.HTTPError as error:
-            return ProviderTestResult(status="failure", message=f"AI Provider 连接失败：{error}")
+            return ProviderTestResult(
+                status="failure",
+                message=_format_provider_transport_error(error, self.settings, endpoint),
+            )
 
         return ProviderTestResult(status="success", message="AI Provider 连接测试成功")
 
@@ -274,11 +342,15 @@ class OpenAICompatibleProvider:
                 },
                 timeout=30,
             )
-            response.raise_for_status()
+            _raise_provider_http_error(response, self.settings, endpoint)
             payload = response.json()
             content = payload["choices"][0]["message"]["content"]
+        except AIProviderRequestError:
+            raise
         except httpx.HTTPError as error:
-            raise AIProviderRequestError(f"AI Provider 调用失败：{error}") from error
+            raise AIProviderRequestError(
+                _format_provider_transport_error(error, self.settings, endpoint)
+            ) from error
         except (KeyError, IndexError, TypeError, ValueError) as error:
             raise ResumeAnalysisValidationError("AI 返回的简历分析结构无效") from error
 
@@ -322,12 +394,16 @@ class OpenAICompatibleProvider:
                 },
                 timeout=30,
             )
-            response.raise_for_status()
+            _raise_provider_http_error(response, self.settings, endpoint)
             payload = response.json()
             content = payload["choices"][0]["message"]["content"]
             return validate_interviewer_action(_load_json_content(content))
+        except AIProviderRequestError:
+            raise
         except httpx.HTTPError as error:
-            raise AIProviderRequestError(f"AI Provider 调用失败：{error}") from error
+            raise AIProviderRequestError(
+                _format_provider_transport_error(error, self.settings, endpoint)
+            ) from error
         except (KeyError, IndexError, TypeError, ValueError) as error:
             raise InterviewerActionValidationError("AI 返回的面试官动作结构无效") from error
         except ResumeAnalysisValidationError as error:
@@ -370,12 +446,16 @@ class OpenAICompatibleProvider:
                 },
                 timeout=45,
             )
-            response.raise_for_status()
+            _raise_provider_http_error(response, self.settings, endpoint)
             payload = response.json()
             content = payload["choices"][0]["message"]["content"]
             return validate_interview_review(_load_json_content(content))
+        except AIProviderRequestError:
+            raise
         except httpx.HTTPError as error:
-            raise AIProviderRequestError(f"AI Provider 调用失败：{error}") from error
+            raise AIProviderRequestError(
+                _format_provider_transport_error(error, self.settings, endpoint)
+            ) from error
         except (KeyError, IndexError, TypeError, ValueError) as error:
             raise InterviewReviewValidationError("AI 返回的复盘结构无效") from error
         except ResumeAnalysisValidationError as error:

@@ -417,7 +417,8 @@ def test_provider_http_failure_returns_502_without_creating_session(monkeypatch,
         response = client.post(f"/interviews/{interview_id}/sessions", json={"style": "study"})
 
     assert response.status_code == 502
-    assert response.json()["detail"].startswith("AI Provider 调用失败")
+    assert response.json()["detail"].startswith("AI Provider 网络连接失败")
+    assert "127.0.0.1:9/chat/completions" in response.json()["detail"]
     assert _interview_session_count() == 0
 
 
