@@ -89,6 +89,7 @@ def test_user_edits_confirms_and_reads_saved_resume_analysis(monkeypatch, tmp_pa
             json={
                 "resumeMarkdown": "# 张三\n\n## 项目经历\n- Mock Interview",
                 "targetRole": "前端工程师",
+                "interviewMode": "multi_round",
                 "analysis": {
                     "background_summary": generated_analysis["backgroundSummary"],
                     "key_projects": generated_analysis["keyProjects"],
@@ -108,5 +109,6 @@ def test_user_edits_confirms_and_reads_saved_resume_analysis(monkeypatch, tmp_pa
     assert save_response.status_code == 200
     assert read_response.status_code == 200
     assert read_response.json()["analysis"]["backgroundSummary"] == "用户编辑后的背景摘要"
+    assert read_response.json()["interviewMode"] == "multi_round"
     assert read_response.json()["analysis"]["focusTopics"] == ["状态管理表达", "项目复盘"]
     assert read_response.json()["analysis"]["lowPriorityFollowUpTopics"] == ["弱相关外包经历"]

@@ -68,6 +68,7 @@ class InterviewRecord:
     id: int
     resume_markdown: str
     target_role: str
+    interview_mode: str
     analysis: ResumeAnalysis
 
 
@@ -132,11 +133,20 @@ def initialize_resume_analysis_schema() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 resume_markdown TEXT NOT NULL,
                 target_role TEXT NOT NULL DEFAULT '',
+                interview_mode TEXT NOT NULL DEFAULT 'single_round',
                 analysis_json TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(interviews)").fetchall()
+        }
+        if "interview_mode" not in columns:
+            connection.execute(
+                "ALTER TABLE interviews ADD COLUMN interview_mode TEXT NOT NULL DEFAULT 'single_round'"
+            )
         connection.execute(
             "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
             ("0002_interviews",),
@@ -147,18 +157,21 @@ def save_interview(
     *,
     resume_markdown: str,
     target_role: str,
+    interview_mode: str = "single_round",
     analysis: ResumeAnalysis,
 ) -> InterviewRecord:
     initialize_resume_analysis_schema()
+    normalized_mode = interview_mode.strip() or "single_round"
     with connect() as connection:
         cursor = connection.execute(
             """
-            INSERT INTO interviews (resume_markdown, target_role, analysis_json)
-            VALUES (?, ?, ?)
+            INSERT INTO interviews (resume_markdown, target_role, interview_mode, analysis_json)
+            VALUES (?, ?, ?, ?)
             """,
             (
                 resume_markdown,
                 target_role,
+                normalized_mode,
                 analysis.model_dump_json(),
             ),
         )
@@ -168,6 +181,7 @@ def save_interview(
         id=interview_id,
         resume_markdown=resume_markdown,
         target_role=target_role,
+        interview_mode=normalized_mode,
         analysis=analysis,
     )
 
@@ -177,7 +191,7 @@ def read_interview(interview_id: int) -> InterviewRecord | None:
     with connect() as connection:
         row: sqlite3.Row | None = connection.execute(
             """
-            SELECT id, resume_markdown, target_role, analysis_json
+            SELECT id, resume_markdown, target_role, interview_mode, analysis_json
             FROM interviews
             WHERE id = ?
             """,
@@ -191,5 +205,6 @@ def read_interview(interview_id: int) -> InterviewRecord | None:
         id=int(row["id"]),
         resume_markdown=str(row["resume_markdown"]),
         target_role=str(row["target_role"]),
+        interview_mode=str(row["interview_mode"]),
         analysis=validate_resume_analysis(json.loads(str(row["analysis_json"]))),
     )

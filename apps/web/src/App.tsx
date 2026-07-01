@@ -81,6 +81,8 @@ type ResumeAnalysis = {
 };
 
 type InterviewSessionStyle = "study" | "pressure";
+type InterviewMode = "single_round" | "multi_round";
+type NewInterviewStep = "upload" | "analysis" | "interview";
 
 type TranscriptMessage = {
   role: "interviewer" | "candidate";
@@ -101,12 +103,76 @@ type InterviewSession = {
   transcript: TranscriptMessage[];
 };
 
+type RouteId = "home" | "new-upload" | "new-analysis" | "new-interview" | "history" | "settings";
+
 const interviewStyleOptions: { value: InterviewSessionStyle; label: string }[] = [
   { value: "study", label: "学习梳理面" },
   { value: "pressure", label: "压力面" }
 ];
 
+const interviewModeOptions: { value: InterviewMode; label: string }[] = [
+  { value: "single_round", label: "单轮面试" },
+  { value: "multi_round", label: "多轮面试" }
+];
+
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+
+function routeFromHash(hash: string): RouteId {
+  switch (hash.replace(/^#/, "")) {
+    case "/new/resume":
+      return "new-upload";
+    case "/new/analysis":
+      return "new-analysis";
+    case "/new/interview":
+      return "new-interview";
+    case "/history":
+      return "history";
+    case "/settings":
+      return "settings";
+    default:
+      return "home";
+  }
+}
+
+function hashForRoute(route: RouteId) {
+  switch (route) {
+    case "new-upload":
+      return "#/new/resume";
+    case "new-analysis":
+      return "#/new/analysis";
+    case "new-interview":
+      return "#/new/interview";
+    case "history":
+      return "#/history";
+    case "settings":
+      return "#/settings";
+    default:
+      return "#/";
+  }
+}
+
+function routeForStep(step: NewInterviewStep): RouteId {
+  if (step === "analysis") {
+    return "new-analysis";
+  }
+  if (step === "interview") {
+    return "new-interview";
+  }
+  return "new-upload";
+}
+
+function viewForRoute(route: RouteId): ViewId {
+  switch (route) {
+    case "settings":
+      return "settings";
+    case "history":
+      return "history";
+    case "home":
+      return "home";
+    default:
+      return "new";
+  }
+}
 
 function createDraftProvider(index = 1): EditableAIProviderConfig {
   return {
@@ -444,23 +510,43 @@ function SettingsPage() {
   );
 }
 
-function SetupPanel() {
+function NewInterviewFlow({ step, onNavigateStep }: { step: NewInterviewStep; onNavigateStep: (step: NewInterviewStep) => void }) {
   const [resumeMarkdown, setResumeMarkdown] = useState(resumePreview);
   const [targetRole, setTargetRole] = useState("前端工程师");
   const [analysis, setAnalysis] = useState<ResumeAnalysis | null>(null);
   const [lastImportedFileName, setLastImportedFileName] = useState("");
   const [fileError, setFileError] = useState("");
   const [workflowMessage, setWorkflowMessage] = useState("");
- const [isAnalyzing, setIsAnalyzing] = useState(false);
- const [isSavingInterview, setIsSavingInterview] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isSavingInterview, setIsSavingInterview] = useState(false);
+  const [interviewMode, setInterviewMode] = useState<InterviewMode>("single_round");
   const [interviewStyle, setInterviewStyle] = useState<InterviewSessionStyle>("study");
   const [savedInterviewId, setSavedInterviewId] = useState<number | null>(null);
   const [session, setSession] = useState<InterviewSession | null>(null);
   const [answerDraft, setAnswerDraft] = useState("");
   const [interviewError, setInterviewError] = useState("");
-  const [isStartingSession, setIsStartingSession] = useState(false);
   const [isSubmittingAnswer, setIsSubmittingAnswer] = useState(false);
   const [isEndingSession, setIsEndingSession] = useState(false);
+
+  function invalidateGeneratedState(message = "简历或目标岗位已修改，需要重新解析简历") {
+    if (analysis || savedInterviewId !== null || session) {
+      setAnalysis(null);
+      setSavedInterviewId(null);
+      setSession(null);
+      setAnswerDraft("");
+      setWorkflowMessage(message);
+    }
+  }
+
+  function updateResumeMarkdown(value: string) {
+    setResumeMarkdown(value);
+    invalidateGeneratedState();
+  }
+
+  function updateTargetRole(value: string) {
+    setTargetRole(value);
+    invalidateGeneratedState();
+  }
 
   async function importMarkdownFile(file: File | undefined) {
     if (!file) {
@@ -481,6 +567,7 @@ function SetupPanel() {
       }
 
       setResumeMarkdown(content);
+      invalidateGeneratedState("Markdown 简历已导入，需要重新解析简历");
       setLastImportedFileName(file.name);
       setFileError("");
       setWorkflowMessage("Markdown 简历已导入，请确认内容后手动生成分析");
@@ -511,7 +598,11 @@ function SetupPanel() {
         throw new Error(detail?.detail ?? "生成简历分析失败");
       }
       setAnalysis((await response.json()) as ResumeAnalysis);
-      setWorkflowMessage("简历分析已生成，可继续编辑并确认保存");
+      setSavedInterviewId(null);
+      setSession(null);
+      setAnswerDraft("");
+      setWorkflowMessage("简历分析已生成，可继续编辑并确认配置");
+      onNavigateStep("analysis");
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : "生成简历分析失败");
     } finally {
@@ -519,7 +610,7 @@ function SetupPanel() {
     }
   }
 
-  async function confirmInterview() {
+  async function confirmAndStartInterview() {
     if (!analysis) {
       setWorkflowMessage("请先生成简历分析");
       return;
@@ -528,62 +619,52 @@ function SetupPanel() {
     setIsSavingInterview(true);
     setWorkflowMessage("");
     try {
-      const response = await fetch(`${apiBaseUrl}/interviews`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          resumeMarkdown,
-          targetRole,
-          analysis: {
-            background_summary: analysis.backgroundSummary,
-            key_projects: analysis.keyProjects,
-            technical_stack: analysis.technicalStack,
-            follow_up_topics: analysis.followUpTopics,
-            risk_points: analysis.riskPoints,
-            unclear_points: analysis.unclearPoints,
-            target_role_notes: analysis.targetRoleNotes,
-            focus_topics: analysis.focusTopics,
-            low_priority_follow_up_topics: analysis.lowPriorityFollowUpTopics
-          }
-        })
-      });
-      if (!response.ok) {
-        const detail = (await response.json().catch(() => null)) as { detail?: string } | null;
-        throw new Error(detail?.detail ?? "保存面试记录失败");
+      let interviewId = savedInterviewId;
+      if (interviewId === null) {
+        const response = await fetch(`${apiBaseUrl}/interviews`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            resumeMarkdown,
+            targetRole,
+            interviewMode,
+            analysis: {
+              background_summary: analysis.backgroundSummary,
+              key_projects: analysis.keyProjects,
+              technical_stack: analysis.technicalStack,
+              follow_up_topics: analysis.followUpTopics,
+              risk_points: analysis.riskPoints,
+              unclear_points: analysis.unclearPoints,
+              target_role_notes: analysis.targetRoleNotes,
+              focus_topics: analysis.focusTopics,
+              low_priority_follow_up_topics: analysis.lowPriorityFollowUpTopics
+            }
+          })
+        });
+        if (!response.ok) {
+          const detail = (await response.json().catch(() => null)) as { detail?: string } | null;
+          throw new Error(detail?.detail ?? "保存面试记录失败");
+        }
+        const savedInterview = (await response.json()) as { id: number };
+        interviewId = savedInterview.id;
+        setSavedInterviewId(interviewId);
       }
-     const savedInterview = (await response.json()) as { id: number };
-      setSavedInterviewId(savedInterview.id);
-      setWorkflowMessage(`简历分析已确认并保存为面试记录 #${savedInterview.id}`);
-    } catch (error) {
-      setWorkflowMessage(error instanceof Error ? error.message : "保存面试记录失败");
-    } finally {
-      setIsSavingInterview(false);
-    }
-  }
-
-  async function startInterview() {
-    if (savedInterviewId === null) {
-      return;
-    }
-
-    setIsStartingSession(true);
-    setInterviewError("");
-    try {
-      const response = await fetch(`${apiBaseUrl}/interviews/${savedInterviewId}/sessions`, {
+      const sessionResponse = await fetch(`${apiBaseUrl}/interviews/${interviewId}/sessions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ style: interviewStyle })
       });
-      if (!response.ok) {
-        const detail = (await response.json().catch(() => null)) as { detail?: string } | null;
+      if (!sessionResponse.ok) {
+        const detail = (await sessionResponse.json().catch(() => null)) as { detail?: string } | null;
         throw new Error(detail?.detail ?? "启动面试失败");
       }
-      setSession((await response.json()) as InterviewSession);
-      setWorkflowMessage("面试已开始，请逐题作答");
+      setSession((await sessionResponse.json()) as InterviewSession);
+      setWorkflowMessage(`配置已确认，面试记录 #${interviewId} 已开始`);
+      onNavigateStep("interview");
     } catch (error) {
-      setInterviewError(error instanceof Error ? error.message : "启动面试失败");
+      setWorkflowMessage(error instanceof Error ? error.message : "保存面试记录或启动面试失败");
     } finally {
-      setIsStartingSession(false);
+      setIsSavingInterview(false);
     }
   }
 
@@ -644,26 +725,76 @@ function SetupPanel() {
   }
 
   function updateAnalysis(patch: Partial<ResumeAnalysis>) {
+    setSavedInterviewId(null);
+    setSession(null);
     setAnalysis((currentAnalysis) => (currentAnalysis ? { ...currentAnalysis, ...patch } : currentAnalysis));
   }
 
-  return (
+  function abandonStartedInterview() {
+    setSession(null);
+    setSavedInterviewId(null);
+    setAnswerDraft("");
+    setInterviewError("");
+    setWorkflowMessage("当前会话已从前端流程中放弃；如需继续，请重新确认配置并开始面试");
+    onNavigateStep("analysis");
+  }
+
+  if (step === "analysis" && !analysis) {
+    return (
+      <section className="panel setupPanel" aria-labelledby="setup-guard-title">
+        <div className="emptyRouteState">
+          <AlertCircle size={22} aria-hidden="true" />
+          <div>
+            <h2 id="setup-guard-title">需要先解析简历</h2>
+            <p>简历解析与配置页依赖第一步的 Markdown 简历和目标岗位。</p>
+          </div>
+          <button className="primaryButton" onClick={() => onNavigateStep("upload")} type="button">
+            返回上传简历
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  if (step === "interview" && !session) {
+    return (
+      <section className="panel setupPanel" aria-labelledby="interview-guard-title">
+        <div className="emptyRouteState">
+          <AlertCircle size={22} aria-hidden="true" />
+          <div>
+            <h2 id="interview-guard-title">面试尚未开始</h2>
+            <p>开始面试页需要已确认的简历分析和进行中的面试会话。</p>
+          </div>
+          <button
+            className="primaryButton"
+            onClick={() => onNavigateStep(analysis ? "analysis" : "upload")}
+            type="button"
+          >
+            回到前置步骤
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  if (step === "upload") {
+    return (
     <section className="panel setupPanel" aria-labelledby="setup-title">
       <div className="sectionHeader">
         <div>
-          <h2 id="setup-title">新建面试</h2>
-          <p>粘贴 Markdown 简历，确认分析后进入连续对话式模拟面试。</p>
+          <h2 id="setup-title">上传简历</h2>
+          <p>输入或导入 Markdown 简历，并填写可选目标岗位。</p>
         </div>
         <button className="primaryButton" disabled={isAnalyzing} onClick={generateAnalysis} type="button">
           <Sparkles size={16} aria-hidden="true" />
-          {isAnalyzing ? "分析中" : "生成简历分析"}
+          {isAnalyzing ? "分析中" : "解析简历"}
         </button>
       </div>
 
       <div className="workspaceGrid">
         <label className="resumeEditor">
           <span>Markdown 简历</span>
-          <textarea onChange={(event) => setResumeMarkdown(event.target.value)} rows={12} value={resumeMarkdown} />
+          <textarea onChange={(event) => updateResumeMarkdown(event.target.value)} rows={12} value={resumeMarkdown} />
         </label>
 
         <div className="setupControls">
@@ -685,71 +816,86 @@ function SetupPanel() {
 
           <label>
             <span>目标岗位</span>
-            <input onChange={(event) => setTargetRole(event.target.value)} value={targetRole} />
+            <input onChange={(event) => updateTargetRole(event.target.value)} value={targetRole} />
           </label>
-
-          <fieldset>
-           <legend>面试模式</legend>
-           <div className="segmented">
-              <button className="selected" disabled={Boolean(session)} type="button">
-                单轮面试
-              </button>
-              <button disabled={Boolean(session)} type="button">多轮面试</button>
-           </div>
-          </fieldset>
-
-          <fieldset>
-           <legend>面试风格</legend>
-           <div className="segmented">
-              {interviewStyleOptions.map((option) => (
-                <button
-                  className={option.value === interviewStyle ? "selected" : ""}
-                  disabled={Boolean(session)}
-                  key={option.value}
-                  onClick={() => setInterviewStyle(option.value)}
-                  type="button"
-                >
-                  {option.label}
-                </button>
-              ))}
-           </div>
-          </fieldset>
-
-          <div className="configNote">
-            <CheckCircle2 size={18} aria-hidden="true" />
-            <div>
-              <strong>{defaultInterviewConfig.mainQuestionCount} 个主问题</strong>
-              <span>每题最多 {defaultInterviewConfig.maxFollowUpsPerQuestion} 次追问</span>
-            </div>
-          </div>
         </div>
       </div>
 
       {workflowMessage ? <div className="workflowMessage">{workflowMessage}</div> : null}
+    </section>
+    );
+  }
 
-      {analysis ? (
+  if (step === "analysis" && analysis) {
+    return (
+      <section className="panel setupPanel" aria-labelledby="analysis-title">
         <div className="analysisEditor" aria-label="简历分析确认">
           <div className="analysisEditorHeader">
             <div>
-              <h3>简历分析确认</h3>
-              <p>确认前可以修正 AI 对背景、项目和追问方向的理解。</p>
+              <h2 id="analysis-title">简历解析与配置</h2>
+              <p>编辑 AI 对简历的理解，并选择本次面试的组织方式。</p>
             </div>
-           <button className="primaryButton" disabled={isSavingInterview} onClick={confirmInterview} type="button">
-             <Save size={16} aria-hidden="true" />
-             {isSavingInterview ? "保存中" : "确认并保存"}
-           </button>
-            {savedInterviewId !== null ? (
+            <div className="stepActions">
+              <button className="secondaryButton" onClick={() => onNavigateStep("upload")} type="button">
+                返回修改简历
+              </button>
               <button
                 className="primaryButton"
-                disabled={isStartingSession || Boolean(session)}
-                onClick={startInterview}
+                disabled={isSavingInterview}
+                onClick={confirmAndStartInterview}
                 type="button"
               >
                 <MessagesSquare size={16} aria-hidden="true" />
-                {isStartingSession ? "启动中" : "开始面试"}
+                {isSavingInterview ? "启动中" : "确认配置并开始面试"}
               </button>
-            ) : null}
+            </div>
           </div>
+
+          <div className="configurationGrid">
+            <fieldset>
+              <legend>面试模式</legend>
+              <div className="segmented">
+                {interviewModeOptions.map((option) => (
+                  <button
+                    className={option.value === interviewMode ? "selected" : ""}
+                    disabled={Boolean(session)}
+                    key={option.value}
+                    onClick={() => setInterviewMode(option.value)}
+                    type="button"
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>面试风格</legend>
+              <div className="segmented">
+                {interviewStyleOptions.map((option) => (
+                  <button
+                    className={option.value === interviewStyle ? "selected" : ""}
+                    disabled={Boolean(session)}
+                    key={option.value}
+                    onClick={() => setInterviewStyle(option.value)}
+                    type="button"
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+
+            <div className="configNote">
+              <CheckCircle2 size={18} aria-hidden="true" />
+              <div>
+                <strong>{defaultInterviewConfig.mainQuestionCount} 个主问题</strong>
+                <span>每题最多 {defaultInterviewConfig.maxFollowUpsPerQuestion} 次追问</span>
+              </div>
+            </div>
+          </div>
+
+          {workflowMessage ? <div className="workflowMessage">{workflowMessage}</div> : null}
 
           <div className="analysisGrid">
             <label>
@@ -826,8 +972,46 @@ function SetupPanel() {
             </label>
          </div>
        </div>
-     ) : null}
-      {session ? (
+      </section>
+    );
+  }
+
+  return session ? (
+    <section className="panel setupPanel" aria-labelledby="interview-title">
+      <div className="sectionHeader">
+        <div>
+          <h2 id="interview-title">开始面试</h2>
+          <p>当前页面只聚焦问题、文字回答和手动结束。</p>
+        </div>
+        <button className="dangerButton" onClick={abandonStartedInterview} type="button">
+          <Trash2 size={16} aria-hidden="true" />
+          放弃并重新开始
+        </button>
+      </div>
+
+      <div className="readonlySummary" aria-label="面试配置摘要">
+        <div>
+          <span>目标岗位</span>
+          <strong>{targetRole || "由简历推断"}</strong>
+        </div>
+        <div>
+          <span>面试模式</span>
+          <strong>{interviewModeOptions.find((option) => option.value === interviewMode)?.label}</strong>
+        </div>
+        <div>
+          <span>面试风格</span>
+          <strong>{interviewStyleOptions.find((option) => option.value === interviewStyle)?.label}</strong>
+        </div>
+        <div>
+          <span>进度</span>
+          <strong>
+            第 {Math.max(session.mainQuestionCount, 0)} / {session.mainQuestionLimit} 个主问题
+          </strong>
+        </div>
+      </div>
+
+      {workflowMessage ? <div className="workflowMessage">{workflowMessage}</div> : null}
+
         <InterviewConversation
           answerDraft={answerDraft}
           interviewError={interviewError}
@@ -838,9 +1022,8 @@ function SetupPanel() {
           onSubmit={submitAnswer}
           session={session}
         />
-      ) : null}
     </section>
-  );
+  ) : null;
 }
 
 function transcriptKindLabel(kind: TranscriptMessage["kind"]) {
@@ -1014,11 +1197,36 @@ function RightRail() {
 }
 
 export function App() {
-  const [activeView, setActiveView] = useState<ViewId>("home");
+  const [route, setRoute] = useState<RouteId>(() => routeFromHash(window.location.hash));
+
+  useEffect(() => {
+    function syncRouteFromHash() {
+      setRoute(routeFromHash(window.location.hash));
+    }
+
+    window.addEventListener("hashchange", syncRouteFromHash);
+    return () => window.removeEventListener("hashchange", syncRouteFromHash);
+  }, []);
+
+  function navigate(routeId: RouteId) {
+    const nextHash = hashForRoute(routeId);
+    if (window.location.hash === nextHash) {
+      setRoute(routeId);
+      return;
+    }
+    window.location.hash = nextHash;
+  }
+
+  const activeView = viewForRoute(route);
+  const newInterviewStep: NewInterviewStep =
+    route === "new-analysis" ? "analysis" : route === "new-interview" ? "interview" : "upload";
 
   return (
     <div className="appShell">
-      <Navigation activeView={activeView} onViewChange={setActiveView} />
+      <Navigation
+        activeView={activeView}
+        onViewChange={(view) => navigate(view === "new" ? "new-upload" : view)}
+      />
 
       <main className="mainContent">
         <header className="topBar">
@@ -1032,12 +1240,15 @@ export function App() {
           </div>
         </header>
 
-        {activeView === "settings" ? (
+        {route === "settings" ? (
           <SettingsPage />
         ) : (
           <>
-            <SetupPanel />
-            <RoundsPanel />
+            <NewInterviewFlow
+              onNavigateStep={(step) => navigate(routeForStep(step))}
+              step={newInterviewStep}
+            />
+            {route !== "new-interview" ? <RoundsPanel /> : null}
           </>
         )}
       </main>

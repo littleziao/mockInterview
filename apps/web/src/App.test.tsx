@@ -9,6 +9,7 @@ let interviewAnswerCount = 0;
 describe("App", () => {
   beforeEach(() => {
     interviewAnswerCount = 0;
+    window.location.hash = "#/";
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -170,13 +171,14 @@ describe("App", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    window.location.hash = "#/";
   });
 
   it("renders the local mock interview shell", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "AI 模拟面试工作台" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "新建面试" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "上传简历" })).toBeInTheDocument();
     expect(screen.getByText("FastAPI / SQLite 就绪")).toBeInTheDocument();
   });
 
@@ -215,7 +217,7 @@ describe("App", () => {
     expect(successMessage.closest(".connectionState")).toHaveClass("success");
   });
 
-  it("imports Markdown resume, edits generated analysis, and confirms interview", async () => {
+  it("覆盖新建面试流程三步主路径、可编辑简历分析和只读面试配置摘要", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -234,8 +236,9 @@ describe("App", () => {
       expect.anything()
     );
 
-    await user.click(screen.getByRole("button", { name: "生成简历分析" }));
+    await user.click(screen.getByRole("button", { name: "解析简历" }));
 
+    expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
     const backgroundSummary = await screen.findByDisplayValue("候选人具备前端工程经验");
     await user.clear(backgroundSummary);
     await user.type(backgroundSummary, "用户编辑后的背景摘要");
@@ -243,7 +246,9 @@ describe("App", () => {
     const lowPriority = screen.getByLabelText("不希望重点追问的内容");
     await user.clear(lowPriority);
     await user.type(lowPriority, "弱相关外包经历");
-    await user.click(screen.getByRole("button", { name: "确认并保存" }));
+    await user.click(screen.getByRole("button", { name: "多轮面试" }));
+    await user.click(screen.getByRole("button", { name: "压力面" }));
+    await user.click(screen.getByRole("button", { name: "确认配置并开始面试" }));
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
@@ -260,6 +265,53 @@ describe("App", () => {
         body: expect.stringContaining("low_priority_follow_up_topics")
       })
     );
-    expect(await screen.findByText("简历分析已确认并保存为面试记录 #7")).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/interviews",
+      expect.objectContaining({
+        body: expect.stringContaining('"interviewMode":"multi_round"')
+      })
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/interviews/7/sessions",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining("pressure")
+      })
+    );
+    expect(await screen.findByRole("heading", { name: "开始面试" })).toBeInTheDocument();
+    expect(screen.getByLabelText("面试配置摘要")).toHaveTextContent("前端工程师");
+    expect(screen.getByLabelText("面试配置摘要")).toHaveTextContent("多轮面试");
+    expect(screen.getByLabelText("面试配置摘要")).toHaveTextContent("压力面");
+    expect(screen.getByText("先做个自我介绍吧。")).toBeInTheDocument();
+    expect(screen.queryByLabelText("目标岗位")).not.toBeInTheDocument();
+  });
+
+  it("回退修改目标岗位后显式失效已生成的简历分析", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "解析简历" }));
+    expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "返回修改简历" }));
+    await user.clear(screen.getByLabelText("目标岗位"));
+    await user.type(screen.getByLabelText("目标岗位"), "后端工程师");
+
+    expect(screen.getByText("简历或目标岗位已修改，需要重新解析简历")).toBeInTheDocument();
+
+    window.history.back();
+    expect(await screen.findByRole("heading", { name: "需要先解析简历" })).toBeInTheDocument();
+  });
+
+  it("缺少新建面试上下文时守卫后续步骤路由", async () => {
+    window.location.hash = "#/new/interview";
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "面试尚未开始" })).toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "回到前置步骤" }));
+
+    expect(await screen.findByRole("heading", { name: "上传简历" })).toBeInTheDocument();
   });
 });

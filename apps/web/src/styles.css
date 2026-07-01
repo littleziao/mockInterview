@@ -391,6 +391,75 @@ fieldset {
   font-size: 13px;
 }
 
+.stepActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.configurationGrid,
+.readonlySummary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.configurationGrid .configNote {
+  min-height: 80px;
+}
+
+.readonlySummary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 14px;
+  border: 1px solid #d8dfda;
+  border-radius: 8px;
+  background: #f7f9f6;
+}
+
+.readonlySummary div {
+  display: grid;
+  gap: 5px;
+}
+
+.readonlySummary span {
+  color: #6f7b76;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.readonlySummary strong {
+  color: #17211f;
+  font-size: 14px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.emptyRouteState {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  min-height: 156px;
+  color: #45524d;
+}
+
+.emptyRouteState svg {
+  color: #1f6f63;
+}
+
+.emptyRouteState h2 {
+  font-size: 18px;
+}
+
+.emptyRouteState p {
+  margin-top: 6px;
+  color: #6f7b76;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .analysisGrid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -797,9 +866,16 @@ fieldset {
     flex-direction: column;
   }
 
+  .stepActions {
+    justify-content: flex-start;
+  }
+
   .analysisGrid,
   .analysisGrid label:first-child,
-  .analysisGrid label:nth-child(7) {
+  .analysisGrid label:nth-child(7),
+  .configurationGrid,
+  .readonlySummary,
+  .emptyRouteState {
     grid-template-columns: 1fr;
     grid-column: span 1;
   }

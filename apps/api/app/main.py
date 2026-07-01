@@ -117,6 +117,7 @@ class GenerateResumeAnalysisPayload(BaseModel):
 class ConfirmInterviewPayload(BaseModel):
     resume_markdown: str = Field(alias="resumeMarkdown")
     target_role: str = Field(default="", alias="targetRole")
+    interview_mode: str = Field(default="single_round", alias="interviewMode")
     analysis: ResumeAnalysis
 
 
@@ -124,6 +125,7 @@ class InterviewPayload(BaseModel):
     id: int
     resume_markdown: str = Field(serialization_alias="resumeMarkdown")
     target_role: str = Field(serialization_alias="targetRole")
+    interview_mode: str = Field(serialization_alias="interviewMode")
     analysis: ResumeAnalysisPayload
 
 
@@ -238,16 +240,21 @@ def post_interview(payload: ConfirmInterviewPayload) -> InterviewPayload:
     resume_markdown = payload.resume_markdown.strip()
     if not resume_markdown:
         raise HTTPException(status_code=400, detail="Markdown 简历不能为空")
+    interview_mode = payload.interview_mode.strip() or "single_round"
+    if interview_mode not in ("single_round", "multi_round"):
+        raise HTTPException(status_code=400, detail="面试模式只能是 single_round 或 multi_round")
 
     interview = save_interview(
         resume_markdown=resume_markdown,
         target_role=payload.target_role.strip(),
+        interview_mode=interview_mode,
         analysis=payload.analysis,
     )
     return InterviewPayload(
         id=interview.id,
         resume_markdown=interview.resume_markdown,
         target_role=interview.target_role,
+        interview_mode=interview.interview_mode,
         analysis=_to_resume_analysis_payload(interview.analysis),
     )
 
@@ -462,5 +469,6 @@ def get_interview(interview_id: int) -> InterviewPayload:
         id=interview.id,
         resume_markdown=interview.resume_markdown,
         target_role=interview.target_role,
+        interview_mode=interview.interview_mode,
         analysis=_to_resume_analysis_payload(interview.analysis),
     )
