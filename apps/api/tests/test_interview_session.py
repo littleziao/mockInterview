@@ -17,6 +17,11 @@ from apps.api.app.interview_session import (
     resolve_interviewer_action,
     validate_interviewer_action,
 )
+from apps.api.app.interview_review import (
+    ABILITY_DIMENSIONS,
+    read_completed_interview_by_session,
+    validate_interview_review,
+)
 from apps.api.app.main import app
 from apps.api.app.resume_analysis import validate_resume_analysis
 
@@ -99,6 +104,12 @@ def _answer_count_for_latest_main_question(session: dict) -> int:
 def _interview_session_count() -> int:
     with connect() as connection:
         row = connection.execute("SELECT COUNT(*) FROM interview_sessions").fetchone()
+    return int(row[0])
+
+
+def _completed_interview_count() -> int:
+    with connect() as connection:
+        row = connection.execute("SELECT COUNT(*) FROM completed_interviews").fetchone()
     return int(row[0])
 
 
@@ -238,7 +249,8 @@ def test_user_can_manually_end_interview_with_full_transcript(monkeypatch, tmp_p
         interview_id = _create_confirmed_interview(client)
         session = _start_session(client, interview_id)
         advanced = _answer(client, session["id"], "我负责简历分析模块。")
-        ended = client.post(f"/interview-sessions/{session['id']}/end").json()
+        ended_response = client.post(f"/interview-sessions/{session['id']}/end")
+        ended = ended_response.json()
         reloaded = client.get(f"/interview-sessions/{session['id']}").json()
 
         # 已结束的面试不能再作答，保证对话上下文不再变化。
@@ -247,10 +259,71 @@ def test_user_can_manually_end_interview_with_full_transcript(monkeypatch, tmp_p
             json={"answer": "补充内容"},
         )
 
+    assert ended_response.status_code == 200
     assert ended["status"] == "ended"
     assert ended["transcript"] == advanced["transcript"]
     assert reloaded["status"] == "ended"
     assert second_answer.status_code == 400
+
+
+def test_ending_interview_generates_review_scores_and_completed_record(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        interview_id = _create_confirmed_interview(client)
+        session = _start_session(client, interview_id)
+        advanced = _answer(client, session["id"], "我负责简历分析模块和结构化输出校验。")
+        ended_response = client.post(f"/interview-sessions/{session['id']}/end")
+        ended = ended_response.json()
+
+    completed_record = read_completed_interview_by_session(session["id"])
+
+    assert ended_response.status_code == 200, ended_response.text
+    assert ended["status"] == "ended"
+    assert ended["review"]["overallEvaluation"]
+    assert ended["review"]["highlights"]
+    assert ended["review"]["mainIssues"]
+    assert ended["review"]["questionReviews"]
+    assert ended["review"]["improvedExpressionExamples"]
+    assert ended["review"]["sampleAnswers"]
+    assert "唯一标准答案" in ended["review"]["sampleAnswers"][0]
+    assert ended["review"]["knowledgeReferences"]
+    assert ended["review"]["learningFramework"]
+    assert ended["review"]["nextPracticeSuggestions"]
+    assert [score["dimension"] for score in ended["review"]["abilityScores"]] == list(ABILITY_DIMENSIONS)
+    assert all(1 <= score["score"] <= 5 for score in ended["review"]["abilityScores"])
+    assert _completed_interview_count() == 1
+    assert completed_record is not None
+    assert completed_record.interview_id == interview_id
+    assert completed_record.session_id == session["id"]
+    assert [message.model_dump() for message in completed_record.transcript] == [
+        {
+            "role": item["role"],
+            "content": item["content"],
+            "kind": item["kind"],
+            "main_question_index": item["mainQuestionIndex"],
+        }
+        for item in advanced["transcript"]
+    ]
+
+
+def test_invalid_review_structure_returns_502_without_ending_session(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client, "fake://invalid-review")
+        interview_id = _create_confirmed_interview(client)
+        session = _start_session(client, interview_id)
+        response = client.post(f"/interview-sessions/{session['id']}/end")
+        reloaded = client.get(f"/interview-sessions/{session['id']}").json()
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "AI 返回的复盘结构无效"}
+    assert reloaded["status"] == "in_progress"
+    assert _completed_interview_count() == 0
 
 
 def test_starting_session_requires_existing_interview(monkeypatch, tmp_path: Path) -> None:
@@ -308,6 +381,29 @@ def test_validate_interviewer_action_accepts_common_variants() -> None:
     action = validate_interviewer_action({"action": {"type": "追问", "问题": "展开讲讲"}})
     assert action.kind == "follow_up"
     assert action.message == "展开讲讲"
+
+
+def test_validate_interview_review_accepts_common_variants() -> None:
+    review = validate_interview_review(
+        {
+            "复盘": {
+                "总体评价": "整体表达清楚，但技术深度还可以加强。",
+                "亮点": "能结合项目回答\n能说明职责",
+                "主要问题": ["结果指标不足"],
+                "逐题点评": ["第 1 题：需要补充取舍。"],
+                "可改进表达示例": ["可以先讲背景，再讲行动和结果。"],
+                "参考答案": ["示范性回答：这是一种可参考表达，不是唯一标准答案。"],
+                "知识点参考": ["结构化表达"],
+                "学习框架": ["整理项目指标", "练习技术取舍"],
+                "下一次练习建议": ["下一次重点练习项目深挖。"],
+                "能力评分": {dimension: 3 for dimension in ABILITY_DIMENSIONS},
+            }
+        }
+    )
+
+    assert review.overall_evaluation == "整体表达清楚，但技术深度还可以加强。"
+    assert review.highlights == ["能结合项目回答", "能说明职责"]
+    assert [score.dimension for score in review.ability_scores] == list(ABILITY_DIMENSIONS)
 
 
 def test_follow_up_beyond_limit_uses_real_new_main_question_fallback() -> None:

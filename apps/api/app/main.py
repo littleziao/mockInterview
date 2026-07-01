@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from .ai_provider import (
     AIProviderRequestError,
     analyze_resume_with_provider,
+    generate_interview_review_with_provider,
     generate_next_interviewer_action_with_provider,
     test_ai_provider_connection,
 )
@@ -37,17 +38,22 @@ from .interview_session import (
     TranscriptMessage,
     apply_interviewer_action,
     append_candidate_answer,
-    initialize_interview_session_schema,
     read_session,
     resolve_interviewer_action,
     save_session,
     update_session,
 )
+from .interview_review import (
+    InterviewReview,
+    InterviewReviewValidationError,
+    initialize_interview_review_schema,
+    save_completed_interview,
+)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    initialize_interview_session_schema()
+    initialize_interview_review_schema()
     yield
 
 
@@ -279,6 +285,7 @@ class InterviewSessionPayload(BaseModel):
     main_question_limit: int = Field(serialization_alias="mainQuestionLimit")
     follow_up_limit: int = Field(serialization_alias="followUpLimit")
     transcript: list[TranscriptMessagePayload]
+    review: "InterviewReviewPayload | None" = None
 
 
 class StartSessionPayload(BaseModel):
@@ -287,6 +294,25 @@ class StartSessionPayload(BaseModel):
 
 class AnswerSessionPayload(BaseModel):
     answer: str
+
+
+class AbilityScorePayload(BaseModel):
+    dimension: str
+    score: int
+    rationale: str
+
+
+class InterviewReviewPayload(BaseModel):
+    overall_evaluation: str = Field(serialization_alias="overallEvaluation")
+    highlights: list[str]
+    main_issues: list[str] = Field(serialization_alias="mainIssues")
+    question_reviews: list[str] = Field(serialization_alias="questionReviews")
+    improved_expression_examples: list[str] = Field(serialization_alias="improvedExpressionExamples")
+    sample_answers: list[str] = Field(serialization_alias="sampleAnswers")
+    knowledge_references: list[str] = Field(serialization_alias="knowledgeReferences")
+    learning_framework: list[str] = Field(serialization_alias="learningFramework")
+    next_practice_suggestions: list[str] = Field(serialization_alias="nextPracticeSuggestions")
+    ability_scores: list[AbilityScorePayload] = Field(serialization_alias="abilityScores")
 
 
 def _to_transcript_payload(message: TranscriptMessage) -> TranscriptMessagePayload:
@@ -309,6 +335,28 @@ def _to_session_payload(session: InterviewSession) -> InterviewSessionPayload:
         main_question_limit=DEFAULT_MAIN_QUESTIONS,
         follow_up_limit=DEFAULT_MAX_FOLLOW_UPS,
         transcript=[_to_transcript_payload(message) for message in session.transcript],
+    )
+
+
+def _to_review_payload(review: InterviewReview) -> InterviewReviewPayload:
+    return InterviewReviewPayload(
+        overall_evaluation=review.overall_evaluation,
+        highlights=review.highlights,
+        main_issues=review.main_issues,
+        question_reviews=review.question_reviews,
+        improved_expression_examples=review.improved_expression_examples,
+        sample_answers=review.sample_answers,
+        knowledge_references=review.knowledge_references,
+        learning_framework=review.learning_framework,
+        next_practice_suggestions=review.next_practice_suggestions,
+        ability_scores=[
+            AbilityScorePayload(
+                dimension=score.dimension,
+                score=score.score,
+                rationale=score.rationale,
+            )
+            for score in review.ability_scores
+        ],
     )
 
 
@@ -453,6 +501,26 @@ def post_interview_session_end(session_id: int) -> InterviewSessionPayload:
     if session.status != "in_progress":
         raise HTTPException(status_code=400, detail="该面试已结束")
 
+    interview = read_interview(session.interview_id)
+    if interview is None:
+        raise HTTPException(status_code=404, detail="面试记录不存在")
+
+    active_provider = _require_active_provider()
+
+    try:
+        review = generate_interview_review_with_provider(
+            active_provider,
+            session=session,
+            analysis=interview.analysis,
+            target_role=interview.target_role,
+        )
+    except InterviewReviewValidationError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except AIProviderRequestError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
     ended_session = InterviewSession(
         id=session.id,
         interview_id=session.interview_id,
@@ -462,8 +530,11 @@ def post_interview_session_end(session_id: int) -> InterviewSessionPayload:
         main_question_count=session.main_question_count,
         current_main_question_follow_ups=session.current_main_question_follow_ups,
     )
+    save_completed_interview(ended_session, review)
     update_session(ended_session)
-    return _to_session_payload(ended_session)
+    payload = _to_session_payload(ended_session)
+    payload.review = _to_review_payload(review)
+    return payload
 
 
 @app.get("/interviews/{interview_id}", response_model=InterviewPayload)
