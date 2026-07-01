@@ -10,6 +10,15 @@ describe("App", () => {
   beforeEach(() => {
     interviewAnswerCount = 0;
     window.location.hash = "#/";
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:mock-review")
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn()
+    });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -153,15 +162,39 @@ describe("App", () => {
             currentMainQuestionFollowUps: 1,
             mainQuestionLimit: 6,
             followUpLimit: 2,
-            reviewError: "AI Provider 调用失败：[SSL: UNEXPECTED_EOF_WHILE_READING]",
             transcript: [
               {
                 role: "interviewer",
                 content: "先做个自我介绍吧。",
                 kind: "main_question",
                 mainQuestionIndex: 0
+              },
+              {
+                role: "candidate",
+                content: "我负责简历分析和 AI Provider 接入。",
+                kind: "",
+                mainQuestionIndex: 0
               }
-            ]
+            ],
+            review: {
+              overallEvaluation: "整体能说明项目背景，但技术取舍和结果指标还可以加强。",
+              highlights: ["能基于真实项目经历回答问题"],
+              mainIssues: ["项目结果指标还不够明确"],
+              questionReviews: ["第 1 个主问题：回答覆盖背景，但缺少量化结果。"],
+              improvedExpressionExamples: ["可以按 背景-行动-结果 的顺序说明项目贡献。"],
+              sampleAnswers: ["示范性回答：这是一种可参考表达，不是唯一标准答案。"],
+              knowledgeReferences: ["结构化输出校验"],
+              learningFramework: ["整理项目指标", "练习技术取舍表达"],
+              nextPracticeSuggestions: ["下一次重点练习项目深挖。"],
+              abilityScores: [
+                { dimension: "专业知识准确性", score: 3, rationale: "概念基本准确。" },
+                { dimension: "项目经验表达", score: 4, rationale: "项目表达较清楚。" },
+                { dimension: "问题分析能力", score: 3, rationale: "拆解过程还可加强。" },
+                { dimension: "技术深度", score: 3, rationale: "底层机制展开不足。" },
+                { dimension: "沟通结构化", score: 4, rationale: "表达有主线。" },
+                { dimension: "岗位匹配度", score: 4, rationale: "经历和岗位较匹配。" }
+              ]
+            }
           });
         }
 
@@ -171,6 +204,7 @@ describe("App", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     window.location.hash = "#/";
   });
@@ -287,9 +321,16 @@ describe("App", () => {
     expect(screen.queryByLabelText("目标岗位")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "手动结束" }));
-    expect(await screen.findByText("面试已结束，完整对话上下文已保留。")).toBeInTheDocument();
-    expect(screen.getByText(/复盘生成失败/)).toHaveTextContent("UNEXPECTED_EOF_WHILE_READING");
-    expect(screen.queryByRole("button", { name: "提交回答" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "面试复盘" })).toBeInTheDocument();
+    expect(screen.getByText("整体能说明项目背景，但技术取舍和结果指标还可以加强。")).toBeInTheDocument();
+    expect(screen.getByLabelText("六维能力评分雷达图")).toHaveTextContent("专业知识准确性");
+    expect(screen.getByLabelText("六维能力评分雷达图")).toHaveTextContent("4/5");
+    expect(screen.getByText("示范性回答：这是一种可参考表达，不是唯一标准答案。")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "导出 Markdown" }));
+
+    expect(URL.createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:mock-review");
   });
 
   it("回退修改目标岗位后显式失效已生成的简历分析", async () => {

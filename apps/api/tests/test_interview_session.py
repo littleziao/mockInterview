@@ -278,12 +278,14 @@ def test_ending_interview_generates_review_scores_and_completed_record(monkeypat
         advanced = _answer(client, session["id"], "我负责简历分析模块和结构化输出校验。")
         ended_response = client.post(f"/interview-sessions/{session['id']}/end")
         ended = ended_response.json()
+        reloaded = client.get(f"/interview-sessions/{session['id']}").json()
 
     completed_record = read_completed_interview_by_session(session["id"])
 
     assert ended_response.status_code == 200, ended_response.text
     assert ended["status"] == "ended"
     assert ended["review"]["overallEvaluation"]
+    assert reloaded["review"]["overallEvaluation"] == ended["review"]["overallEvaluation"]
     assert ended["review"]["highlights"]
     assert ended["review"]["mainIssues"]
     assert ended["review"]["questionReviews"]

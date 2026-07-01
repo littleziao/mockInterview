@@ -48,6 +48,7 @@ from .interview_review import (
     InterviewReview,
     InterviewReviewValidationError,
     initialize_interview_review_schema,
+    read_completed_interview_by_session,
     save_completed_interview,
 )
 
@@ -327,7 +328,7 @@ def _to_transcript_payload(message: TranscriptMessage) -> TranscriptMessagePaylo
 
 
 def _to_session_payload(session: InterviewSession) -> InterviewSessionPayload:
-    return InterviewSessionPayload(
+    payload = InterviewSessionPayload(
         id=session.id,
         interview_id=session.interview_id,
         style=session.style,
@@ -338,6 +339,10 @@ def _to_session_payload(session: InterviewSession) -> InterviewSessionPayload:
         follow_up_limit=DEFAULT_MAX_FOLLOW_UPS,
         transcript=[_to_transcript_payload(message) for message in session.transcript],
     )
+    completed_record = read_completed_interview_by_session(session.id)
+    if completed_record is not None:
+        payload.review = _to_review_payload(completed_record.review)
+    return payload
 
 
 def _to_review_payload(review: InterviewReview) -> InterviewReviewPayload:

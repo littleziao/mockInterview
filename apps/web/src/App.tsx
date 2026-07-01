@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   CircleStop,
   ClipboardList,
+  Download,
   FileUp,
   History,
   Home,
@@ -82,7 +83,7 @@ type ResumeAnalysis = {
 
 type InterviewSessionStyle = "study" | "pressure";
 type InterviewMode = "single_round" | "multi_round";
-type NewInterviewStep = "upload" | "analysis" | "interview";
+type NewInterviewStep = "upload" | "analysis" | "interview" | "review";
 
 type TranscriptMessage = {
   role: "interviewer" | "candidate";
@@ -101,10 +102,30 @@ type InterviewSession = {
   mainQuestionLimit: number;
   followUpLimit: number;
   transcript: TranscriptMessage[];
+  review?: InterviewReview | null;
   reviewError?: string;
 };
 
-type RouteId = "home" | "new-upload" | "new-analysis" | "new-interview" | "history" | "settings";
+type AbilityScore = {
+  dimension: string;
+  score: number;
+  rationale: string;
+};
+
+type InterviewReview = {
+  overallEvaluation: string;
+  highlights: string[];
+  mainIssues: string[];
+  questionReviews: string[];
+  improvedExpressionExamples: string[];
+  sampleAnswers: string[];
+  knowledgeReferences: string[];
+  learningFramework: string[];
+  nextPracticeSuggestions: string[];
+  abilityScores: AbilityScore[];
+};
+
+type RouteId = "home" | "new-upload" | "new-analysis" | "new-interview" | "review" | "history" | "settings";
 
 const interviewStyleOptions: { value: InterviewSessionStyle; label: string }[] = [
   { value: "study", label: "学习梳理面" },
@@ -126,6 +147,8 @@ function routeFromHash(hash: string): RouteId {
       return "new-analysis";
     case "/new/interview":
       return "new-interview";
+    case "/review":
+      return "review";
     case "/history":
       return "history";
     case "/settings":
@@ -143,6 +166,8 @@ function hashForRoute(route: RouteId) {
       return "#/new/analysis";
     case "new-interview":
       return "#/new/interview";
+    case "review":
+      return "#/review";
     case "history":
       return "#/history";
     case "settings":
@@ -158,6 +183,9 @@ function routeForStep(step: NewInterviewStep): RouteId {
   }
   if (step === "interview") {
     return "new-interview";
+  }
+  if (step === "review") {
+    return "review";
   }
   return "new-upload";
 }
@@ -529,6 +557,14 @@ function NewInterviewFlow({ step, onNavigateStep }: { step: NewInterviewStep; on
   const [isSubmittingAnswer, setIsSubmittingAnswer] = useState(false);
   const [isEndingSession, setIsEndingSession] = useState(false);
 
+  function applySessionUpdate(nextSession: InterviewSession) {
+    setSession(nextSession);
+    if (nextSession.status === "ended" && nextSession.review) {
+      setWorkflowMessage("复盘已生成，可查看学习建议并导出 Markdown");
+      onNavigateStep("review");
+    }
+  }
+
   function invalidateGeneratedState(message = "简历或目标岗位已修改，需要重新解析简历") {
     if (analysis || savedInterviewId !== null || session) {
       setAnalysis(null);
@@ -692,7 +728,7 @@ function NewInterviewFlow({ step, onNavigateStep }: { step: NewInterviewStep; on
         const detail = (await response.json().catch(() => null)) as { detail?: string } | null;
         throw new Error(detail?.detail ?? "提交回答失败");
       }
-      setSession((await response.json()) as InterviewSession);
+      applySessionUpdate((await response.json()) as InterviewSession);
       setAnswerDraft("");
     } catch (error) {
       setInterviewError(error instanceof Error ? error.message : "提交回答失败");
@@ -716,8 +752,11 @@ function NewInterviewFlow({ step, onNavigateStep }: { step: NewInterviewStep; on
         const detail = (await response.json().catch(() => null)) as { detail?: string } | null;
         throw new Error(detail?.detail ?? "结束面试失败");
       }
-      setSession((await response.json()) as InterviewSession);
-      setWorkflowMessage("面试已结束，完整对话上下文已保留");
+      const nextSession = (await response.json()) as InterviewSession;
+      applySessionUpdate(nextSession);
+      if (!nextSession.review) {
+        setWorkflowMessage("面试已结束，完整对话上下文已保留");
+      }
     } catch (error) {
       setInterviewError(error instanceof Error ? error.message : "结束面试失败");
     } finally {
@@ -772,6 +811,23 @@ function NewInterviewFlow({ step, onNavigateStep }: { step: NewInterviewStep; on
             type="button"
           >
             回到前置步骤
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  if (step === "review" && (!session || session.status !== "ended" || !session.review)) {
+    return (
+      <section className="panel setupPanel" aria-labelledby="review-guard-title">
+        <div className="emptyRouteState">
+          <AlertCircle size={22} aria-hidden="true" />
+          <div>
+            <h2 id="review-guard-title">暂无可查看的复盘</h2>
+            <p>复盘页需要已结束的面试和已生成的结构化复盘内容。</p>
+          </div>
+          <button className="primaryButton" onClick={() => onNavigateStep(session ? "interview" : "upload")} type="button">
+            回到面试流程
           </button>
         </div>
       </section>
@@ -977,6 +1033,19 @@ function NewInterviewFlow({ step, onNavigateStep }: { step: NewInterviewStep; on
     );
   }
 
+  if (step === "review" && session?.review) {
+    return (
+      <ReviewPage
+        modeLabel={interviewModeOptions.find((option) => option.value === interviewMode)?.label ?? "单轮面试"}
+        onBackToInterview={() => onNavigateStep("interview")}
+        review={session.review}
+        session={session}
+        styleLabel={interviewStyleOptions.find((option) => option.value === interviewStyle)?.label ?? "学习梳理面"}
+        targetRole={targetRole}
+      />
+    );
+  }
+
   return session ? (
     <section className="panel setupPanel" aria-labelledby="interview-title">
       <div className="sectionHeader">
@@ -1025,6 +1094,222 @@ function NewInterviewFlow({ step, onNavigateStep }: { step: NewInterviewStep; on
         />
     </section>
   ) : null;
+}
+
+function markdownList(items: string[]) {
+  return items.length ? items.map((item) => `- ${item}`).join("\n") : "- 暂无";
+}
+
+function buildReviewMarkdown({
+  modeLabel,
+  review,
+  session,
+  styleLabel,
+  targetRole
+}: {
+  modeLabel: string;
+  review: InterviewReview;
+  session: InterviewSession;
+  styleLabel: string;
+  targetRole: string;
+}) {
+  const transcript = session.transcript
+    .map((message) => {
+      const speaker = message.role === "interviewer" ? "面试官" : "我的回答";
+      return `- **${speaker}**：${message.content}`;
+    })
+    .join("\n");
+
+  return [
+    "# 模拟面试复盘",
+    "",
+    `- 目标岗位：${targetRole || "由简历推断"}`,
+    `- 面试模式：${modeLabel}`,
+    `- 面试风格：${styleLabel}`,
+    "",
+    "## 总体评价",
+    review.overallEvaluation,
+    "",
+    "## 亮点",
+    markdownList(review.highlights),
+    "",
+    "## 主要问题",
+    markdownList(review.mainIssues),
+    "",
+    "## 逐题点评",
+    markdownList(review.questionReviews),
+    "",
+    "## 可改进表达示例",
+    markdownList(review.improvedExpressionExamples),
+    "",
+    "## 参考答案",
+    markdownList(review.sampleAnswers),
+    "",
+    "## 知识点参考",
+    markdownList(review.knowledgeReferences),
+    "",
+    "## 学习框架",
+    markdownList(review.learningFramework),
+    "",
+    "## 下一次练习建议",
+    markdownList(review.nextPracticeSuggestions),
+    "",
+    "## 六维能力评分",
+    review.abilityScores.map((score) => `- ${score.dimension}：${score.score}/5，${score.rationale}`).join("\n"),
+    "",
+    "## 面试对话",
+    transcript || "- 暂无对话记录",
+    ""
+  ].join("\n");
+}
+
+function downloadReviewMarkdown(markdown: string) {
+  const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `mock-interview-review-${new Date().toISOString().slice(0, 10)}.md`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function AbilityRadar({ scores }: { scores: AbilityScore[] }) {
+  const center = 120;
+  const maxRadius = 88;
+  const vertices = scores.map((score, index) => {
+    const angle = (Math.PI * 2 * index) / scores.length - Math.PI / 2;
+    const radius = (Math.max(0, Math.min(5, score.score)) / 5) * maxRadius;
+    return `${center + Math.cos(angle) * radius},${center + Math.sin(angle) * radius}`;
+  });
+
+  return (
+    <div className="radarChart" aria-label="六维能力评分雷达图">
+      <svg viewBox="0 0 240 240" role="img" aria-label="基于已保存能力评分绘制的雷达图">
+        {[1, 2, 3, 4, 5].map((level) => {
+          const radius = (level / 5) * maxRadius;
+          const points = scores.map((_, index) => {
+            const angle = (Math.PI * 2 * index) / scores.length - Math.PI / 2;
+            return `${center + Math.cos(angle) * radius},${center + Math.sin(angle) * radius}`;
+          });
+          return <polygon className="radarGrid" key={level} points={points.join(" ")} />;
+        })}
+        {scores.map((_, index) => {
+          const angle = (Math.PI * 2 * index) / scores.length - Math.PI / 2;
+          return (
+            <line
+              className="radarAxis"
+              key={index}
+              x1={center}
+              x2={center + Math.cos(angle) * maxRadius}
+              y1={center}
+              y2={center + Math.sin(angle) * maxRadius}
+            />
+          );
+        })}
+        <polygon className="radarArea" points={vertices.join(" ")} />
+      </svg>
+      <ul className="radarLegend">
+        {scores.map((score) => (
+          <li key={score.dimension}>
+            <span>{score.dimension}</span>
+            <strong>{score.score}/5</strong>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ReviewSection({ title, items }: { title: string; items: string[] }) {
+  return (
+    <section className="reviewBlock" aria-labelledby={`review-${title}`}>
+      <h3 id={`review-${title}`}>{title}</h3>
+      <ul>
+        {items.map((item, index) => (
+          <li key={`${title}-${index}`}>{item}</li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function ReviewPage({
+  modeLabel,
+  onBackToInterview,
+  review,
+  session,
+  styleLabel,
+  targetRole
+}: {
+  modeLabel: string;
+  onBackToInterview: () => void;
+  review: InterviewReview;
+  session: InterviewSession;
+  styleLabel: string;
+  targetRole: string;
+}) {
+  const markdown = buildReviewMarkdown({ modeLabel, review, session, styleLabel, targetRole });
+
+  return (
+    <section className="panel setupPanel reviewPage" aria-labelledby="review-title">
+      <div className="sectionHeader">
+        <div>
+          <h2 id="review-title">面试复盘</h2>
+          <p>教练视角的复盘、学习材料和六维能力评分。</p>
+        </div>
+        <div className="stepActions">
+          <button className="secondaryButton" onClick={onBackToInterview} type="button">
+            <MessagesSquare size={16} aria-hidden="true" />
+            查看对话
+          </button>
+          <button className="primaryButton" onClick={() => downloadReviewMarkdown(markdown)} type="button">
+            <Download size={16} aria-hidden="true" />
+            导出 Markdown
+          </button>
+        </div>
+      </div>
+
+      <div className="readonlySummary" aria-label="复盘配置摘要">
+        <div>
+          <span>目标岗位</span>
+          <strong>{targetRole || "由简历推断"}</strong>
+        </div>
+        <div>
+          <span>面试模式</span>
+          <strong>{modeLabel}</strong>
+        </div>
+        <div>
+          <span>面试风格</span>
+          <strong>{styleLabel}</strong>
+        </div>
+        <div>
+          <span>主问题</span>
+          <strong>
+            {session.mainQuestionCount} / {session.mainQuestionLimit}
+          </strong>
+        </div>
+      </div>
+
+      <div className="reviewOverview">
+        <section className="reviewSummary" aria-labelledby="review-summary-title">
+          <h3 id="review-summary-title">总体评价</h3>
+          <p>{review.overallEvaluation}</p>
+        </section>
+        <AbilityRadar scores={review.abilityScores} />
+      </div>
+
+      <div className="reviewGrid">
+        <ReviewSection items={review.highlights} title="亮点" />
+        <ReviewSection items={review.mainIssues} title="主要问题" />
+        <ReviewSection items={review.questionReviews} title="逐题点评" />
+        <ReviewSection items={review.improvedExpressionExamples} title="可改进表达示例" />
+        <ReviewSection items={review.sampleAnswers} title="参考答案" />
+        <ReviewSection items={review.knowledgeReferences} title="知识点参考" />
+        <ReviewSection items={review.learningFramework} title="学习框架" />
+        <ReviewSection items={review.nextPracticeSuggestions} title="下一次练习建议" />
+      </div>
+    </section>
+  );
 }
 
 function transcriptKindLabel(kind: TranscriptMessage["kind"]) {
@@ -1223,7 +1508,13 @@ export function App() {
 
   const activeView = viewForRoute(route);
   const newInterviewStep: NewInterviewStep =
-    route === "new-analysis" ? "analysis" : route === "new-interview" ? "interview" : "upload";
+    route === "new-analysis"
+      ? "analysis"
+      : route === "new-interview"
+        ? "interview"
+        : route === "review"
+          ? "review"
+          : "upload";
 
   return (
     <div className="appShell">
@@ -1252,7 +1543,7 @@ export function App() {
               onNavigateStep={(step) => navigate(routeForStep(step))}
               step={newInterviewStep}
             />
-            {route !== "new-interview" ? <RoundsPanel /> : null}
+            {route !== "new-interview" && route !== "review" ? <RoundsPanel /> : null}
           </>
         )}
       </main>

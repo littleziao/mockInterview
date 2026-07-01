@@ -824,6 +824,129 @@ fieldset {
   background: #fff3ef;
 }
 
+.reviewPage {
+  display: grid;
+  gap: 18px;
+}
+
+.reviewOverview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 18px;
+  align-items: stretch;
+}
+
+.reviewSummary,
+.reviewBlock,
+.radarChart {
+  border: 1px solid #d8dfda;
+  border-radius: 8px;
+  background: #fbfcfa;
+}
+
+.reviewSummary {
+  padding: 18px;
+}
+
+.reviewSummary h3,
+.reviewBlock h3 {
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.reviewSummary p {
+  margin-top: 10px;
+  color: #45524d;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.radarChart {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 14px;
+}
+
+.radarChart svg {
+  width: 220px;
+  height: 220px;
+}
+
+.radarGrid {
+  fill: none;
+  stroke: #d6dfda;
+  stroke-width: 1;
+}
+
+.radarAxis {
+  stroke: #e1e7e2;
+  stroke-width: 1;
+}
+
+.radarArea {
+  fill: rgba(31, 111, 99, 0.22);
+  stroke: #1f6f63;
+  stroke-width: 3;
+}
+
+.radarLegend,
+.reviewBlock ul {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.radarLegend li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  color: #45524d;
+  font-size: 12px;
+}
+
+.radarLegend span {
+  overflow-wrap: anywhere;
+}
+
+.radarLegend strong {
+  color: #174f47;
+  font-size: 13px;
+}
+
+.reviewGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.reviewBlock {
+  padding: 16px;
+}
+
+.reviewBlock li {
+  position: relative;
+  padding-left: 14px;
+  color: #45524d;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.reviewBlock li::before {
+  position: absolute;
+  top: 0.72em;
+  left: 0;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: #d08f3e;
+  content: "";
+}
+
 @media (max-width: 1120px) {
   .appShell {
     grid-template-columns: 220px minmax(0, 1fr);
@@ -840,8 +963,15 @@ fieldset {
   .workspaceGrid,
   .roundList,
   .settingsGrid,
-  .providerSettingsLayout {
+  .providerSettingsLayout,
+  .reviewOverview,
+  .reviewGrid,
+  .radarChart {
     grid-template-columns: 1fr;
+  }
+
+  .radarChart svg {
+    justify-self: center;
   }
 
   .sidebar {
