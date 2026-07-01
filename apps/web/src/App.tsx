@@ -96,7 +96,7 @@ type InterviewSession = {
   id: number;
   interviewId: number;
   style: InterviewSessionStyle;
-  status: "in_progress" | "awaiting_review" | "ended";
+  status: "in_progress" | "awaiting_review" | "ended" | "abandoned";
   mainQuestionCount: number;
   currentMainQuestionFollowUps: number;
   mainQuestionLimit: number;
@@ -104,6 +104,32 @@ type InterviewSession = {
   transcript: TranscriptMessage[];
   review?: InterviewReview | null;
   reviewError?: string;
+};
+
+type ResumeableSession = {
+  id: number;
+  interviewId: number;
+  style: InterviewSessionStyle;
+  status: "in_progress";
+  mainQuestionCount: number;
+  currentMainQuestionFollowUps: number;
+  mainQuestionLimit: number;
+  followUpLimit: number;
+  targetRole: string;
+  interviewMode: InterviewMode;
+};
+
+type ResumedInterview = {
+  id: number;
+  resumeMarkdown: string;
+  targetRole: string;
+  interviewMode: InterviewMode;
+  analysis: ResumeAnalysis;
+};
+
+type ResumeContext = {
+  session: InterviewSession;
+  interview: ResumedInterview;
 };
 
 type AbilityScore = {
@@ -539,7 +565,19 @@ function SettingsPage() {
   );
 }
 
-function NewInterviewFlow({ step, onNavigateStep }: { step: NewInterviewStep; onNavigateStep: (step: NewInterviewStep) => void }) {
+function NewInterviewFlow({
+  hasInProgressInterview,
+  onAbandonActiveInterview,
+  onNavigateStep,
+  resumeContext,
+  step
+}: {
+  hasInProgressInterview: boolean;
+  onAbandonActiveInterview: (sessionId: number) => Promise<void> | void;
+  onNavigateStep: (step: NewInterviewStep) => void;
+  resumeContext: ResumeContext | null;
+  step: NewInterviewStep;
+}) {
   const [resumeMarkdown, setResumeMarkdown] = useState(resumePreview);
   const [targetRole, setTargetRole] = useState("前端工程师");
   const [analysis, setAnalysis] = useState<ResumeAnalysis | null>(null);
@@ -557,6 +595,23 @@ function NewInterviewFlow({ step, onNavigateStep }: { step: NewInterviewStep; on
   const [isSubmittingAnswer, setIsSubmittingAnswer] = useState(false);
   const [isEndingSession, setIsEndingSession] = useState(false);
   const [isGeneratingReview, setIsGeneratingReview] = useState(false);
+
+  // 从后端恢复未完成面试时，把进行中会话与简历分析灌入流程状态。
+  useEffect(() => {
+    if (!resumeContext) {
+      return;
+    }
+    setResumeMarkdown(resumeContext.interview.resumeMarkdown);
+    setTargetRole(resumeContext.interview.targetRole);
+    setAnalysis(resumeContext.interview.analysis);
+    setInterviewMode(resumeContext.interview.interviewMode);
+    setInterviewStyle(resumeContext.session.style);
+    setSavedInterviewId(resumeContext.interview.id);
+    setSession(resumeContext.session);
+    setAnswerDraft("");
+    setInterviewError("");
+    setWorkflowMessage("已恢复未完成的面试，可继续作答");
+  }, [resumeContext]);
 
   function applySessionUpdate(nextSession: InterviewSession) {
     setSession(nextSession);
@@ -651,6 +706,10 @@ function NewInterviewFlow({ step, onNavigateStep }: { step: NewInterviewStep; on
   }
 
   async function confirmAndStartInterview() {
+    if (hasInProgressInterview) {
+      setWorkflowMessage("已有未完成的面试，请先在首页继续或放弃后再开始新面试");
+      return;
+    }
     if (!analysis) {
       setWorkflowMessage("请先生成简历分析");
       return;
@@ -796,12 +855,22 @@ function NewInterviewFlow({ step, onNavigateStep }: { step: NewInterviewStep; on
     setAnalysis((currentAnalysis) => (currentAnalysis ? { ...currentAnalysis, ...patch } : currentAnalysis));
   }
 
-  function abandonStartedInterview() {
+  async function abandonStartedInterview() {
+    if (!session) {
+      return;
+    }
+    const sessionId = session.id;
+    try {
+      await onAbandonActiveInterview(sessionId);
+    } catch (error) {
+      setInterviewError(error instanceof Error ? error.message : "放弃面试失败");
+      return;
+    }
     setSession(null);
     setSavedInterviewId(null);
     setAnswerDraft("");
     setInterviewError("");
-    setWorkflowMessage("当前会话已从前端流程中放弃；如需继续，请重新确认配置并开始面试");
+    setWorkflowMessage("当前会话已放弃；如需继续，请重新确认配置并开始面试");
     onNavigateStep("analysis");
   }
 
@@ -822,7 +891,7 @@ function NewInterviewFlow({ step, onNavigateStep }: { step: NewInterviewStep; on
     );
   }
 
-  if (step === "interview" && !session) {
+  if (step === "interview" && !session && !resumeContext) {
     return (
       <section className="panel setupPanel" aria-labelledby="interview-guard-title">
         <div className="emptyRouteState">
@@ -1529,8 +1598,78 @@ function RightRail() {
   );
 }
 
+function ResumableInterviews({
+  onAbandon,
+  onResume,
+  sessions
+}: {
+  onAbandon: (sessionId: number) => Promise<void> | void;
+  onResume: (sessionId: number, interviewId: number) => Promise<void> | void;
+  sessions: ResumeableSession[];
+}) {
+  if (sessions.length === 0) {
+    return null;
+  }
+
+  async function handleAbandon(onAbandon: (sessionId: number) => Promise<void> | void, sessionId: number) {
+    try {
+      await onAbandon(sessionId);
+    } catch {
+      // 错误已由 onAbandon 内部上报到首页错误条。
+    }
+  }
+
+  return (
+    <section className="panel" aria-labelledby="resume-title">
+      <div className="sectionHeader">
+        <div>
+          <h2 id="resume-title">未完成的面试</h2>
+          <p>继续之前未完成的模拟面试，或放弃后重新开始。</p>
+        </div>
+      </div>
+      <ul className="resumeList" aria-label="进行中面试列表">
+        {sessions.map((session) => {
+          const modeLabel =
+            interviewModeOptions.find((option) => option.value === session.interviewMode)?.label ?? "单轮面试";
+          const styleLabel =
+            interviewStyleOptions.find((option) => option.value === session.style)?.label ?? "学习梳理面";
+          return (
+            <li className="resumeItem" key={session.id}>
+              <div className="resumeSummary">
+                <strong>目标岗位：{session.targetRole || "由简历推断"}</strong>
+                <span>
+                  {modeLabel} · {styleLabel} · 第 {Math.max(session.mainQuestionCount, 0)} / {session.mainQuestionLimit} 个主问题
+                </span>
+              </div>
+              <div className="resumeActions">
+                <button
+                  className="primaryButton"
+                  onClick={() => void onResume(session.id, session.interviewId)}
+                  type="button"
+                >
+                  继续面试
+                </button>
+                <button
+                  className="dangerButton"
+                  onClick={() => void handleAbandon(onAbandon, session.id)}
+                  type="button"
+                >
+                  放弃
+                </button>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 export function App() {
   const [route, setRoute] = useState<RouteId>(() => routeFromHash(window.location.hash));
+  const [inProgressSessions, setInProgressSessions] = useState<ResumeableSession[]>([]);
+  const [resumeContext, setResumeContext] = useState<ResumeContext | null>(null);
+  const [resumeError, setResumeError] = useState("");
 
   useEffect(() => {
     function syncRouteFromHash() {
@@ -1541,6 +1680,30 @@ export function App() {
     return () => window.removeEventListener("hashchange", syncRouteFromHash);
   }, []);
 
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadInProgress() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/interview-sessions/in-progress`);
+        if (!response.ok) {
+          return;
+        }
+        const sessions = (await response.json()) as ResumeableSession[];
+        if (mounted) {
+          setInProgressSessions(sessions);
+        }
+      } catch {
+        // 进行中面试加载失败时不阻塞主流程，首页仍可新建面试。
+      }
+    }
+
+    void loadInProgress();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   function navigate(routeId: RouteId) {
     const nextHash = hashForRoute(routeId);
     if (window.location.hash === nextHash) {
@@ -1548,6 +1711,42 @@ export function App() {
       return;
     }
     window.location.hash = nextHash;
+  }
+
+  async function resumeInterview(sessionId: number, interviewId: number) {
+    setResumeError("");
+    try {
+      const [sessionResponse, interviewResponse] = await Promise.all([
+        fetch(`${apiBaseUrl}/interview-sessions/${sessionId}`),
+        fetch(`${apiBaseUrl}/interviews/${interviewId}`)
+      ]);
+      if (!sessionResponse.ok || !interviewResponse.ok) {
+        throw new Error("恢复面试失败");
+      }
+      const session = (await sessionResponse.json()) as InterviewSession;
+      const interview = (await interviewResponse.json()) as ResumedInterview;
+      setResumeContext({ interview, session });
+      navigate("new-interview");
+    } catch (error) {
+      setResumeError(error instanceof Error ? error.message : "恢复面试失败");
+    }
+  }
+
+  async function abandonInterview(sessionId: number) {
+    setResumeError("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/interview-sessions/${sessionId}/abandon`, {
+        method: "POST"
+      });
+      if (!response.ok) {
+        throw new Error("放弃面试失败");
+      }
+      setInProgressSessions((current) => current.filter((session) => session.id !== sessionId));
+      setResumeContext((current) => (current && current.session.id === sessionId ? null : current));
+    } catch (error) {
+      setResumeError(error instanceof Error ? error.message : "放弃面试失败");
+      throw error;
+    }
   }
 
   const activeView = viewForRoute(route);
@@ -1583,8 +1782,21 @@ export function App() {
           <SettingsPage />
         ) : (
           <>
+            {route === "home" ? (
+              <ResumableInterviews
+                onAbandon={abandonInterview}
+                onResume={resumeInterview}
+                sessions={inProgressSessions}
+              />
+            ) : null}
+            {resumeError && route === "home" ? (
+              <div className="workflowMessage failure">{resumeError}</div>
+            ) : null}
             <NewInterviewFlow
+              hasInProgressInterview={inProgressSessions.length > 0}
+              onAbandonActiveInterview={abandonInterview}
               onNavigateStep={(step) => navigate(routeForStep(step))}
+              resumeContext={resumeContext}
               step={newInterviewStep}
             />
             {route !== "new-interview" && route !== "review" ? <RoundsPanel /> : null}

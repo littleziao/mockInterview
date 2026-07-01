@@ -6,9 +6,25 @@ import { App } from "./App";
 
 let interviewAnswerCount = 0;
 
+type InProgressMockSession = {
+  id: number;
+  interviewId: number;
+  style: string;
+  status: string;
+  mainQuestionCount: number;
+  currentMainQuestionFollowUps: number;
+  mainQuestionLimit: number;
+  followUpLimit: number;
+  targetRole: string;
+  interviewMode: string;
+};
+
+let inProgressSessionsMock: InProgressMockSession[] = [];
+
 describe("App", () => {
   beforeEach(() => {
     interviewAnswerCount = 0;
+    inProgressSessionsMock = [];
     window.location.hash = "#/";
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
@@ -23,6 +39,10 @@ describe("App", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
+
+        if (url.endsWith("/interview-sessions/in-progress") && !init) {
+          return Response.json(inProgressSessionsMock);
+        }
 
         if (url.endsWith("/settings/ai-provider") && !init) {
           return Response.json({
@@ -225,6 +245,60 @@ describe("App", () => {
           });
         }
 
+        if (url.match(/\/interview-sessions\/\d+\/abandon$/) && init?.method === "POST") {
+          return Response.json({
+            id: 31,
+            interviewId: 7,
+            style: "study",
+            status: "abandoned",
+            mainQuestionCount: 2,
+            currentMainQuestionFollowUps: 1,
+            mainQuestionLimit: 6,
+            followUpLimit: 2,
+            transcript: [
+              { role: "interviewer", content: "继续上次的回答吧。", kind: "main_question", mainQuestionIndex: 0 },
+              { role: "candidate", content: "我之前负责简历分析。", kind: "", mainQuestionIndex: 0 }
+            ]
+          });
+        }
+
+        if (url.match(/\/interview-sessions\/\d+$/) && !init) {
+          return Response.json({
+            id: 31,
+            interviewId: 7,
+            style: "study",
+            status: "in_progress",
+            mainQuestionCount: 2,
+            currentMainQuestionFollowUps: 1,
+            mainQuestionLimit: 6,
+            followUpLimit: 2,
+            transcript: [
+              { role: "interviewer", content: "继续上次的回答吧。", kind: "main_question", mainQuestionIndex: 0 },
+              { role: "candidate", content: "我之前负责简历分析。", kind: "", mainQuestionIndex: 0 }
+            ]
+          });
+        }
+
+        if (url.match(/\/interviews\/\d+$/) && !init) {
+          return Response.json({
+            id: 7,
+            resumeMarkdown: "# 恢复的简历",
+            targetRole: "前端工程师",
+            interviewMode: "single_round",
+            analysis: {
+              backgroundSummary: "恢复的背景摘要",
+              keyProjects: ["Mock Interview"],
+              technicalStack: ["React"],
+              followUpTopics: ["项目职责"],
+              riskPoints: [],
+              unclearPoints: [],
+              targetRoleNotes: "",
+              focusTopics: [],
+              lowPriorityFollowUpTopics: []
+            }
+          });
+        }
+
         return Response.json({}, { status: 404 });
       })
     );
@@ -236,10 +310,13 @@ describe("App", () => {
     window.location.hash = "#/";
   });
 
-  it("renders the local mock interview shell", () => {
+  it("renders the local mock interview shell", async () => {
     render(<App />);
 
-    expect(screen.getByRole("heading", { name: "AI 模拟面试工作台" })).toBeInTheDocument();
+    // 等待首页进行中面试列表加载完成，避免异步状态更新落在 act 之外。
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "AI 模拟面试工作台" })).toBeInTheDocument();
+    });
     expect(screen.getByRole("heading", { name: "上传简历" })).toBeInTheDocument();
     expect(screen.getByText("FastAPI / SQLite 就绪")).toBeInTheDocument();
   });
@@ -391,5 +468,118 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "回到前置步骤" }));
 
     expect(await screen.findByRole("heading", { name: "上传简历" })).toBeInTheDocument();
+  });
+
+  it("首页检测到进行中面试时展示恢复入口与进度摘要", async () => {
+    inProgressSessionsMock = [
+      {
+        id: 31,
+        interviewId: 7,
+        style: "study",
+        status: "in_progress",
+        mainQuestionCount: 2,
+        currentMainQuestionFollowUps: 1,
+        mainQuestionLimit: 6,
+        followUpLimit: 2,
+        targetRole: "前端工程师",
+        interviewMode: "single_round"
+      }
+    ];
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "未完成的面试" })).toBeInTheDocument();
+    expect(screen.getByText(/目标岗位：前端工程师/)).toBeInTheDocument();
+    expect(screen.getByText(/第 2 \/ 6 个主问题/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "继续面试" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "放弃" })).toBeInTheDocument();
+  });
+
+  it("在首页放弃进行中面试后调用 abandon 接口并移除卡片", async () => {
+    const user = userEvent.setup();
+    inProgressSessionsMock = [
+      {
+        id: 31,
+        interviewId: 7,
+        style: "study",
+        status: "in_progress",
+        mainQuestionCount: 2,
+        currentMainQuestionFollowUps: 1,
+        mainQuestionLimit: 6,
+        followUpLimit: 2,
+        targetRole: "前端工程师",
+        interviewMode: "single_round"
+      }
+    ];
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "未完成的面试" });
+    await user.click(screen.getByRole("button", { name: "放弃" }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        "http://127.0.0.1:8000/interview-sessions/31/abandon",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("heading", { name: "未完成的面试" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("继续进行中面试时拉取会话与简历并恢复到面试页", async () => {
+    const user = userEvent.setup();
+    inProgressSessionsMock = [
+      {
+        id: 31,
+        interviewId: 7,
+        style: "study",
+        status: "in_progress",
+        mainQuestionCount: 2,
+        currentMainQuestionFollowUps: 1,
+        mainQuestionLimit: 6,
+        followUpLimit: 2,
+        targetRole: "前端工程师",
+        interviewMode: "single_round"
+      }
+    ];
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "继续面试" }));
+
+    expect(await screen.findByRole("heading", { name: "开始面试" })).toBeInTheDocument();
+    expect(screen.getByText("继续上次的回答吧。")).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/interview-sessions/31");
+    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/interviews/7");
+  });
+
+  it("存在进行中面试时禁止新建并提示先去首页处理", async () => {
+    const user = userEvent.setup();
+    inProgressSessionsMock = [
+      {
+        id: 31,
+        interviewId: 7,
+        style: "study",
+        status: "in_progress",
+        mainQuestionCount: 1,
+        currentMainQuestionFollowUps: 0,
+        mainQuestionLimit: 6,
+        followUpLimit: 2,
+        targetRole: "前端工程师",
+        interviewMode: "single_round"
+      }
+    ];
+    render(<App />);
+    await screen.findByRole("heading", { name: "未完成的面试" });
+
+    await user.click(screen.getByRole("button", { name: "解析简历" }));
+    expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "确认配置并开始面试" }));
+
+    expect(await screen.findByText("已有未完成的面试，请先在首页继续或放弃后再开始新面试")).toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/interviews",
+      expect.objectContaining({ method: "POST" })
+    );
   });
 });

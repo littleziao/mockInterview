@@ -40,6 +40,7 @@ from .interview_session import (
     apply_interviewer_action,
     append_candidate_answer,
     InterviewerAction,
+    list_in_progress_sessions,
     read_session,
     resolve_interviewer_action,
     save_session,
@@ -292,6 +293,21 @@ class InterviewSessionPayload(BaseModel):
     review_error: str = Field(default="", serialization_alias="reviewError")
 
 
+class ResumeableSessionPayload(BaseModel):
+    """进行中面试列表项：携带面试摘要，供前端展示恢复入口。不含完整对话。"""
+
+    id: int
+    interview_id: int = Field(serialization_alias="interviewId")
+    style: str
+    status: str
+    main_question_count: int = Field(serialization_alias="mainQuestionCount")
+    current_main_question_follow_ups: int = Field(serialization_alias="currentMainQuestionFollowUps")
+    main_question_limit: int = Field(serialization_alias="mainQuestionLimit")
+    follow_up_limit: int = Field(serialization_alias="followUpLimit")
+    target_role: str = Field(serialization_alias="targetRole")
+    interview_mode: str = Field(serialization_alias="interviewMode")
+
+
 class StartSessionPayload(BaseModel):
     style: str = "study"
 
@@ -477,6 +493,30 @@ def post_interview_session(interview_id: int, payload: StartSessionPayload | Non
     return _to_session_payload(save_session(started_session))
 
 
+@app.get("/interview-sessions/in-progress", response_model=list[ResumeableSessionPayload])
+def get_in_progress_sessions() -> list[ResumeableSessionPayload]:
+    payloads: list[ResumeableSessionPayload] = []
+    for session in list_in_progress_sessions():
+        interview = read_interview(session.interview_id)
+        if interview is None:
+            continue
+        payloads.append(
+            ResumeableSessionPayload(
+                id=session.id,
+                interview_id=session.interview_id,
+                style=session.style,
+                status=session.status,
+                main_question_count=session.main_question_count,
+                current_main_question_follow_ups=session.current_main_question_follow_ups,
+                main_question_limit=DEFAULT_MAIN_QUESTIONS,
+                follow_up_limit=DEFAULT_MAX_FOLLOW_UPS,
+                target_role=interview.target_role,
+                interview_mode=interview.interview_mode,
+            )
+        )
+    return payloads
+
+
 @app.get("/interview-sessions/{session_id}", response_model=InterviewSessionPayload)
 def get_interview_session(session_id: int) -> InterviewSessionPayload:
     session = read_session(session_id)
@@ -597,6 +637,27 @@ def post_interview_session_end(session_id: int) -> InterviewSessionPayload:
     awaiting_review_session = _awaiting_review_session_from(session)
     update_session(awaiting_review_session)
     return _to_session_payload(awaiting_review_session)
+
+
+@app.post("/interview-sessions/{session_id}/abandon", response_model=InterviewSessionPayload)
+def post_interview_session_abandon(session_id: int) -> InterviewSessionPayload:
+    session = read_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="进行中面试不存在")
+    if session.status != "in_progress":
+        raise HTTPException(status_code=400, detail="只有进行中的面试可以放弃")
+
+    abandoned_session = InterviewSession(
+        id=session.id,
+        interview_id=session.interview_id,
+        style=session.style,
+        status="abandoned",
+        transcript=list(session.transcript),
+        main_question_count=session.main_question_count,
+        current_main_question_follow_ups=session.current_main_question_follow_ups,
+    )
+    update_session(abandoned_session)
+    return _to_session_payload(abandoned_session)
 
 
 @app.post("/interview-sessions/{session_id}/review", response_model=InterviewSessionPayload)

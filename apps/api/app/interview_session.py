@@ -318,6 +318,21 @@ def read_session(session_id: int) -> InterviewSession | None:
     return _build_session_from_row(row)
 
 
+def list_in_progress_sessions() -> list[InterviewSession]:
+    initialize_interview_session_schema()
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, interview_id, style, status, transcript_json,
+                   main_question_count, current_main_question_follow_ups
+            FROM interview_sessions
+            WHERE status = 'in_progress'
+            ORDER BY updated_at DESC, id DESC
+            """,
+        ).fetchall()
+    return [_build_session_from_row(row) for row in rows]
+
+
 def create_new_session(*, interview_id: int, style: str) -> InterviewSession:
     normalized_style = style.strip() or "study"
     return save_session(

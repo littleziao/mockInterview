@@ -715,3 +715,133 @@ def test_full_session_runs_within_question_and_follow_up_limits(monkeypatch, tmp
         if message["role"] == "interviewer"
     )
     assert _answer_count_for_latest_main_question(current) >= 1
+
+
+def test_listing_in_progress_sessions_returns_only_active_with_summary(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        interview_a = _create_confirmed_interview(client)
+        session_a = _start_session(client, interview_a)
+        _answer(client, session_a["id"], "我负责简历分析模块。")
+
+        listing = client.get("/interview-sessions/in-progress").json()
+
+        assert [item["id"] for item in listing] == [session_a["id"]]
+        assert listing[0]["status"] == "in_progress"
+        assert listing[0]["interviewId"] == interview_a
+        assert listing[0]["targetRole"] == "前端工程师"
+        assert listing[0]["interviewMode"] == "single_round"
+        assert listing[0]["mainQuestionCount"] >= 1
+        assert listing[0]["mainQuestionLimit"] == DEFAULT_MAIN_QUESTIONS
+        assert "transcript" not in listing[0]
+
+        # 第二场进行中面试更新更近，应排在最前。
+        interview_b = _create_confirmed_interview(client)
+        session_b = _start_session(client, interview_b)
+        listing_two = client.get("/interview-sessions/in-progress").json()
+        assert [item["id"] for item in listing_two] == [session_b["id"], session_a["id"]]
+
+        # 手动结束后变为 awaiting_review，不再出现在进行中列表。
+        client.post(f"/interview-sessions/{session_a['id']}/end")
+        listing_after = client.get("/interview-sessions/in-progress").json()
+
+    assert [item["id"] for item in listing_after] == [session_b["id"]]
+
+
+def test_user_can_abandon_in_progress_interview_without_review(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        interview_id = _create_confirmed_interview(client)
+        session = _start_session(client, interview_id)
+        _answer(client, session["id"], "我负责简历分析模块。")
+        completed_before = _completed_interview_count()
+
+        abandoned_response = client.post(f"/interview-sessions/{session['id']}/abandon")
+        abandoned = abandoned_response.json()
+        reloaded = client.get(f"/interview-sessions/{session['id']}").json()
+        listing = client.get("/interview-sessions/in-progress").json()
+        answer_after = client.post(
+            f"/interview-sessions/{session['id']}/answers",
+            json={"answer": "再补充一点"},
+        )
+
+    assert abandoned_response.status_code == 200, abandoned_response.text
+    assert abandoned["status"] == "abandoned"
+    assert abandoned["review"] is None
+    assert reloaded["status"] == "abandoned"
+    # 放弃的面试不再出现在进行中列表，也不能继续作答。
+    assert [item["id"] for item in listing] == []
+    assert answer_after.status_code == 400
+    # 放弃的面试不生成复盘，也不进入趋势数据源 completed_interviews。
+    assert _completed_interview_count() == completed_before
+    assert read_completed_interview_by_session(session["id"]) is None
+
+
+def test_abandon_rejects_non_in_progress_and_missing(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        interview_id = _create_confirmed_interview(client)
+        session = _start_session(client, interview_id)
+        client.post(f"/interview-sessions/{session['id']}/end")
+
+        rejecting = client.post(f"/interview-sessions/{session['id']}/abandon")
+        missing = client.post("/interview-sessions/999999/abandon")
+
+    assert rejecting.status_code == 400
+    assert missing.status_code == 404
+
+
+def test_resuming_in_progress_interview_preserves_full_context(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        interview_id = _create_confirmed_interview(client)
+        session = _start_session(client, interview_id, style="pressure")
+        before = _answer(client, session["id"], "我负责简历分析模块和结构化校验。")
+
+        # 模拟刷新或重新打开：从后端重新读取进行中面试与面试记录。
+        resumed_session = client.get(f"/interview-sessions/{session['id']}").json()
+        resumed_interview = client.get(f"/interviews/{interview_id}").json()
+        listing = client.get("/interview-sessions/in-progress").json()
+
+    assert resumed_session["status"] == "in_progress"
+    assert resumed_session["style"] == "pressure"
+    assert resumed_session["interviewId"] == interview_id
+    assert resumed_session["transcript"] == before["transcript"]
+    assert resumed_session["mainQuestionCount"] == before["mainQuestionCount"]
+    assert resumed_session["currentMainQuestionFollowUps"] == before["currentMainQuestionFollowUps"]
+    # 已问问题与已回答内容都保留。
+    assert any(message["role"] == "interviewer" for message in resumed_session["transcript"])
+    assert any(message["role"] == "candidate" for message in resumed_session["transcript"])
+
+    # 简历分析、目标岗位、面试模式均保留。
+    assert resumed_interview["targetRole"] == "前端工程师"
+    assert resumed_interview["interviewMode"] == "single_round"
+    assert resumed_interview["analysis"]["backgroundSummary"]
+    assert resumed_interview["analysis"]["keyProjects"]
+    assert resumed_interview["analysis"]["technicalStack"]
+
+    # 进行中列表携带面试摘要，且该会话尚未进入趋势数据源 completed_interviews。
+    assert listing[0]["targetRole"] == "前端工程师"
+    assert listing[0]["interviewMode"] == "single_round"
+    assert listing[0]["style"] == "pressure"
+    assert read_completed_interview_by_session(session["id"]) is None
