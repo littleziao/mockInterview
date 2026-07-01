@@ -24,6 +24,7 @@ from .ai_settings import (
 )
 from .database import database_health, initialize_database
 from .resume_analysis import (
+    InterviewRecord,
     ResumeAnalysis,
     ResumeAnalysisValidationError,
     initialize_resume_analysis_schema,
@@ -286,6 +287,7 @@ class InterviewSessionPayload(BaseModel):
     follow_up_limit: int = Field(serialization_alias="followUpLimit")
     transcript: list[TranscriptMessagePayload]
     review: "InterviewReviewPayload | None" = None
+    review_error: str = Field(default="", serialization_alias="reviewError")
 
 
 class StartSessionPayload(BaseModel):
@@ -365,6 +367,44 @@ def _require_active_provider():
     if active_provider is None:
         raise HTTPException(status_code=400, detail="请先新增并选择一个模型供应商")
     return active_provider
+
+
+def _ended_session_from(session: InterviewSession) -> InterviewSession:
+    return InterviewSession(
+        id=session.id,
+        interview_id=session.interview_id,
+        style=session.style,
+        status="ended",
+        transcript=list(session.transcript),
+        main_question_count=session.main_question_count,
+        current_main_question_follow_ups=session.current_main_question_follow_ups,
+    )
+
+
+def _finalize_session_with_review(
+    *,
+    session: InterviewSession,
+    interview: InterviewRecord,
+    active_provider: AIProviderSettings,
+) -> InterviewSessionPayload:
+    ended_session = _ended_session_from(session)
+    update_session(ended_session)
+
+    payload = _to_session_payload(ended_session)
+    try:
+        review = generate_interview_review_with_provider(
+            active_provider,
+            session=ended_session,
+            analysis=interview.analysis,
+            target_role=interview.target_role,
+        )
+    except (InterviewReviewValidationError, AIProviderRequestError, ValueError) as error:
+        payload.review_error = str(error)
+        return payload
+
+    save_completed_interview(ended_session, review)
+    payload.review = _to_review_payload(review)
+    return payload
 
 
 @app.post("/interviews/{interview_id}/sessions", response_model=InterviewSessionPayload)
@@ -461,6 +501,13 @@ def post_interview_session_answer(
     # 每次回答后立即保存，保证刷新或重新打开后可继续。
     update_session(session_with_answer)
 
+    if session_with_answer.main_question_count >= DEFAULT_MAIN_QUESTIONS:
+        return _finalize_session_with_review(
+            session=session_with_answer,
+            interview=interview,
+            active_provider=active_provider,
+        )
+
     try:
         action = generate_next_interviewer_action_with_provider(
             active_provider,
@@ -507,34 +554,11 @@ def post_interview_session_end(session_id: int) -> InterviewSessionPayload:
 
     active_provider = _require_active_provider()
 
-    try:
-        review = generate_interview_review_with_provider(
-            active_provider,
-            session=session,
-            analysis=interview.analysis,
-            target_role=interview.target_role,
-        )
-    except InterviewReviewValidationError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
-    except AIProviderRequestError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
-    ended_session = InterviewSession(
-        id=session.id,
-        interview_id=session.interview_id,
-        style=session.style,
-        status="ended",
-        transcript=list(session.transcript),
-        main_question_count=session.main_question_count,
-        current_main_question_follow_ups=session.current_main_question_follow_ups,
+    return _finalize_session_with_review(
+        session=session,
+        interview=interview,
+        active_provider=active_provider,
     )
-    save_completed_interview(ended_session, review)
-    update_session(ended_session)
-    payload = _to_session_payload(ended_session)
-    payload.review = _to_review_payload(review)
-    return payload
 
 
 @app.get("/interviews/{interview_id}", response_model=InterviewPayload)

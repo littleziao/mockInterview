@@ -153,6 +153,7 @@ describe("App", () => {
             currentMainQuestionFollowUps: 1,
             mainQuestionLimit: 6,
             followUpLimit: 2,
+            reviewError: "AI Provider 调用失败：[SSL: UNEXPECTED_EOF_WHILE_READING]",
             transcript: [
               {
                 role: "interviewer",
@@ -284,6 +285,11 @@ describe("App", () => {
     expect(screen.getByLabelText("面试配置摘要")).toHaveTextContent("压力面");
     expect(screen.getByText("先做个自我介绍吧。")).toBeInTheDocument();
     expect(screen.queryByLabelText("目标岗位")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "手动结束" }));
+    expect(await screen.findByText("面试已结束，完整对话上下文已保留。")).toBeInTheDocument();
+    expect(screen.getByText(/复盘生成失败/)).toHaveTextContent("UNEXPECTED_EOF_WHILE_READING");
+    expect(screen.queryByRole("button", { name: "提交回答" })).not.toBeInTheDocument();
   });
 
   it("回退修改目标岗位后显式失效已生成的简历分析", async () => {

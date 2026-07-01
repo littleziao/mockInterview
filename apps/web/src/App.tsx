@@ -101,6 +101,7 @@ type InterviewSession = {
   mainQuestionLimit: number;
   followUpLimit: number;
   transcript: TranscriptMessage[];
+  reviewError?: string;
 };
 
 type RouteId = "home" | "new-upload" | "new-analysis" | "new-interview" | "history" | "settings";
@@ -1112,6 +1113,9 @@ function InterviewConversation({
       {ended ? (
         <div className="conversationFooter">
           <div className="endedState">面试已结束，完整对话上下文已保留。</div>
+          {session.reviewError ? (
+            <div className="workflowMessage failure">复盘生成失败：{session.reviewError}</div>
+          ) : null}
         </div>
       ) : (
         <div className="conversationFooter">

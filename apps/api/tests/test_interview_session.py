@@ -15,6 +15,7 @@ from apps.api.app.interview_session import (
     apply_interviewer_action,
     append_candidate_answer,
     resolve_interviewer_action,
+    save_session,
     validate_interviewer_action,
 )
 from apps.api.app.interview_review import (
@@ -320,10 +321,53 @@ def test_invalid_review_structure_returns_502_without_ending_session(monkeypatch
         response = client.post(f"/interview-sessions/{session['id']}/end")
         reloaded = client.get(f"/interview-sessions/{session['id']}").json()
 
-    assert response.status_code == 502
-    assert response.json() == {"detail": "AI 返回的复盘结构无效"}
-    assert reloaded["status"] == "in_progress"
+    assert response.status_code == 200
+    assert response.json()["status"] == "ended"
+    assert response.json()["review"] is None
+    assert response.json()["reviewError"] == "AI 返回的复盘结构无效"
+    assert reloaded["status"] == "ended"
     assert _completed_interview_count() == 0
+
+
+def test_last_answer_auto_ends_without_requesting_another_interviewer_action(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        # invalid-action 会让“继续请求下一题/追问”的旧行为变成 502。
+        # 达到主问题上限后提交回答应直接结束，并只请求复盘。
+        _configure_provider(client, "fake://invalid-action")
+        interview_id = _create_confirmed_interview(client)
+        session = save_session(
+            InterviewSession(
+                id=0,
+                interview_id=interview_id,
+                style="study",
+                status="in_progress",
+                transcript=[
+                    TranscriptMessage(
+                        role="interviewer",
+                        content="最后一个主问题。",
+                        kind="main_question",
+                        main_question_index=DEFAULT_MAIN_QUESTIONS - 1,
+                    )
+                ],
+                main_question_count=DEFAULT_MAIN_QUESTIONS,
+                current_main_question_follow_ups=0,
+            )
+        )
+
+        response = client.post(
+            f"/interview-sessions/{session.id}/answers",
+            json={"answer": "这是最后一题的回答。"},
+        )
+        ended = response.json()
+
+    assert response.status_code == 200, response.text
+    assert ended["status"] == "ended"
+    assert ended["review"]["overallEvaluation"]
+    assert ended["transcript"][-1]["role"] == "candidate"
+    assert ended["transcript"][-1]["content"] == "这是最后一题的回答。"
 
 
 def test_starting_session_requires_existing_interview(monkeypatch, tmp_path: Path) -> None:
@@ -546,26 +590,32 @@ def test_full_session_runs_within_question_and_follow_up_limits(monkeypatch, tmp
         session_id = session["id"]
 
         current = session
-        # 驱动足够多轮回答，触发多次换题与澄清，但不得越过硬上限。
+        # 驱动足够多轮回答，触发多次换题与澄清；达到硬上限后应自动结束。
         for index in range(30):
             current = _answer(client, session_id, f"第 {index + 1} 段回答")
             assert current["mainQuestionCount"] <= DEFAULT_MAIN_QUESTIONS
             assert current["currentMainQuestionFollowUps"] <= DEFAULT_MAX_FOLLOW_UPS
+            if current["status"] == "ended":
+                break
 
-        ended = client.post(f"/interview-sessions/{session_id}/end").json()
+        rejected_after_end = client.post(
+            f"/interview-sessions/{session_id}/answers",
+            json={"answer": "结束后继续回答"},
+        )
 
-    assert ended["status"] == "ended"
-    assert ended["mainQuestionCount"] == DEFAULT_MAIN_QUESTIONS
+    assert current["status"] == "ended"
+    assert current["mainQuestionCount"] == DEFAULT_MAIN_QUESTIONS
     main_questions = [
         message
-        for message in ended["transcript"]
+        for message in current["transcript"]
         if message["role"] == "interviewer" and message["kind"] == "main_question"
     ]
     assert len(main_questions) == DEFAULT_MAIN_QUESTIONS
+    assert rejected_after_end.status_code == 400
     # 面试官视角全程不展示参考答案。
     assert all(
         "参考答案" not in message["content"]
-        for message in ended["transcript"]
+        for message in current["transcript"]
         if message["role"] == "interviewer"
     )
-    assert _answer_count_for_latest_main_question(ended) >= 1
+    assert _answer_count_for_latest_main_question(current) >= 1
