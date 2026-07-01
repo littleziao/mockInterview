@@ -15,6 +15,9 @@ DEFAULT_MAX_FOLLOW_UPS = 2
 
 INTERVIEWER_ACTION_KINDS = ("main_question", "follow_up", "clarify")
 
+FALLBACK_NEXT_MAIN_QUESTION = "这个问题先到这里。我们换个方向，聊聊另一个和目标岗位相关的核心项目或技术取舍。"
+FALLBACK_FINAL_CLARIFY = "主要问题已经覆盖完了。最后你还有什么想补充、澄清或特别希望我了解的吗？"
+
 
 ACTION_FIELD_ALIASES = {
     "kind": ("kind", "action", "type", "decision", "动作", "类型"),
@@ -353,11 +356,11 @@ def resolve_interviewer_action(
 
     if action.kind == "follow_up" and follow_up_cap_reached:
         if main_question_cap_reached:
-            return InterviewerAction(kind="clarify", message=action.message)
-        return InterviewerAction(kind="main_question", message=action.message)
+            return InterviewerAction(kind="clarify", message=FALLBACK_FINAL_CLARIFY)
+        return InterviewerAction(kind="main_question", message=FALLBACK_NEXT_MAIN_QUESTION)
 
     if action.kind == "main_question" and main_question_cap_reached:
-        return InterviewerAction(kind="clarify", message=action.message)
+        return InterviewerAction(kind="clarify", message=FALLBACK_FINAL_CLARIFY)
 
     return action
 

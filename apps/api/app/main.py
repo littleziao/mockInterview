@@ -36,10 +36,10 @@ from .interview_session import (
     TranscriptMessage,
     apply_interviewer_action,
     append_candidate_answer,
-    create_new_session,
     initialize_interview_session_schema,
     read_session,
     resolve_interviewer_action,
+    save_session,
     update_session,
 )
 
@@ -321,18 +321,26 @@ def post_interview_session(interview_id: int, payload: StartSessionPayload | Non
 
     active_provider = _require_active_provider()
 
-    session = create_new_session(interview_id=interview_id, style=style.strip())
+    draft_session = InterviewSession(
+        id=0,
+        interview_id=interview_id,
+        style=style.strip(),
+        status="in_progress",
+        transcript=[],
+        main_question_count=0,
+        current_main_question_follow_ups=0,
+    )
     try:
         action = generate_next_interviewer_action_with_provider(
             active_provider,
-            session=session,
+            session=draft_session,
             analysis=interview.analysis,
             target_role=interview.target_role,
             starting=True,
         )
-        resolved_action = resolve_interviewer_action(action, session, starting=True)
+        resolved_action = resolve_interviewer_action(action, draft_session, starting=True)
         message, main_question_count, follow_ups = apply_interviewer_action(
-            session, resolved_action, starting=True
+            draft_session, resolved_action, starting=True
         )
     except InterviewerActionValidationError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
@@ -340,16 +348,15 @@ def post_interview_session(interview_id: int, payload: StartSessionPayload | Non
         raise HTTPException(status_code=400, detail=str(error)) from error
 
     started_session = InterviewSession(
-        id=session.id,
-        interview_id=session.interview_id,
-        style=session.style,
+        id=draft_session.id,
+        interview_id=draft_session.interview_id,
+        style=draft_session.style,
         status="in_progress",
-        transcript=[*session.transcript, message],
+        transcript=[message],
         main_question_count=main_question_count,
         current_main_question_follow_ups=follow_ups,
     )
-    update_session(started_session)
-    return _to_session_payload(started_session)
+    return _to_session_payload(save_session(started_session))
 
 
 @app.get("/interview-sessions/{session_id}", response_model=InterviewSessionPayload)
