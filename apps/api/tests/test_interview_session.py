@@ -261,13 +261,14 @@ def test_user_can_manually_end_interview_with_full_transcript(monkeypatch, tmp_p
         )
 
     assert ended_response.status_code == 200
-    assert ended["status"] == "ended"
+    assert ended["status"] == "awaiting_review"
+    assert ended["review"] is None
     assert ended["transcript"] == advanced["transcript"]
-    assert reloaded["status"] == "ended"
+    assert reloaded["status"] == "awaiting_review"
     assert second_answer.status_code == 400
 
 
-def test_ending_interview_generates_review_scores_and_completed_record(monkeypatch, tmp_path: Path) -> None:
+def test_user_confirms_review_generation_after_interview_ends(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
     monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
 
@@ -278,25 +279,32 @@ def test_ending_interview_generates_review_scores_and_completed_record(monkeypat
         advanced = _answer(client, session["id"], "我负责简历分析模块和结构化输出校验。")
         ended_response = client.post(f"/interview-sessions/{session['id']}/end")
         ended = ended_response.json()
+        completed_count_before_review = _completed_interview_count()
+        review_response = client.post(f"/interview-sessions/{session['id']}/review")
+        reviewed = review_response.json()
         reloaded = client.get(f"/interview-sessions/{session['id']}").json()
 
     completed_record = read_completed_interview_by_session(session["id"])
 
     assert ended_response.status_code == 200, ended_response.text
-    assert ended["status"] == "ended"
-    assert ended["review"]["overallEvaluation"]
-    assert reloaded["review"]["overallEvaluation"] == ended["review"]["overallEvaluation"]
-    assert ended["review"]["highlights"]
-    assert ended["review"]["mainIssues"]
-    assert ended["review"]["questionReviews"]
-    assert ended["review"]["improvedExpressionExamples"]
-    assert ended["review"]["sampleAnswers"]
-    assert "唯一标准答案" in ended["review"]["sampleAnswers"][0]
-    assert ended["review"]["knowledgeReferences"]
-    assert ended["review"]["learningFramework"]
-    assert ended["review"]["nextPracticeSuggestions"]
-    assert [score["dimension"] for score in ended["review"]["abilityScores"]] == list(ABILITY_DIMENSIONS)
-    assert all(1 <= score["score"] <= 5 for score in ended["review"]["abilityScores"])
+    assert ended["status"] == "awaiting_review"
+    assert ended["review"] is None
+    assert completed_count_before_review == 0
+    assert review_response.status_code == 200, review_response.text
+    assert reviewed["status"] == "ended"
+    assert reviewed["review"]["overallEvaluation"]
+    assert reloaded["review"]["overallEvaluation"] == reviewed["review"]["overallEvaluation"]
+    assert reviewed["review"]["highlights"]
+    assert reviewed["review"]["mainIssues"]
+    assert reviewed["review"]["questionReviews"]
+    assert reviewed["review"]["improvedExpressionExamples"]
+    assert reviewed["review"]["sampleAnswers"]
+    assert "唯一标准答案" in reviewed["review"]["sampleAnswers"][0]
+    assert reviewed["review"]["knowledgeReferences"]
+    assert reviewed["review"]["learningFramework"]
+    assert reviewed["review"]["nextPracticeSuggestions"]
+    assert [score["dimension"] for score in reviewed["review"]["abilityScores"]] == list(ABILITY_DIMENSIONS)
+    assert all(1 <= score["score"] <= 5 for score in reviewed["review"]["abilityScores"])
     assert _completed_interview_count() == 1
     assert completed_record is not None
     assert completed_record.interview_id == interview_id
@@ -320,14 +328,17 @@ def test_invalid_review_structure_returns_502_without_ending_session(monkeypatch
         _configure_provider(client, "fake://invalid-review")
         interview_id = _create_confirmed_interview(client)
         session = _start_session(client, interview_id)
-        response = client.post(f"/interview-sessions/{session['id']}/end")
+        ended_response = client.post(f"/interview-sessions/{session['id']}/end")
+        response = client.post(f"/interview-sessions/{session['id']}/review")
         reloaded = client.get(f"/interview-sessions/{session['id']}").json()
 
+    assert ended_response.status_code == 200
+    assert ended_response.json()["status"] == "awaiting_review"
     assert response.status_code == 200
-    assert response.json()["status"] == "ended"
+    assert response.json()["status"] == "awaiting_review"
     assert response.json()["review"] is None
     assert response.json()["reviewError"] == "AI 返回的复盘结构无效"
-    assert reloaded["status"] == "ended"
+    assert reloaded["status"] == "awaiting_review"
     assert _completed_interview_count() == 0
 
 
@@ -407,8 +418,8 @@ def test_interview_hard_ends_when_final_question_interactions_are_exhausted(monk
         ended = response.json()
 
     assert response.status_code == 200, response.text
-    assert ended["status"] == "ended"
-    assert ended["review"]["overallEvaluation"]
+    assert ended["status"] == "awaiting_review"
+    assert ended["review"] is None
     assert ended["transcript"][-1]["role"] == "interviewer"
     assert ended["transcript"][-1]["kind"] == "end_interview"
 
@@ -674,12 +685,12 @@ def test_full_session_runs_within_question_and_follow_up_limits(monkeypatch, tmp
         session_id = session["id"]
 
         current = session
-        # 驱动足够多轮回答，触发多次换题与澄清；达到硬上限后应自动结束。
+        # 驱动足够多轮回答，触发多次换题与澄清；达到硬上限后应等待用户确认复盘。
         for index in range(30):
             current = _answer(client, session_id, f"第 {index + 1} 段回答")
             assert current["mainQuestionCount"] <= DEFAULT_MAIN_QUESTIONS
             assert current["currentMainQuestionFollowUps"] <= DEFAULT_MAX_FOLLOW_UPS
-            if current["status"] == "ended":
+            if current["status"] == "awaiting_review":
                 break
 
         rejected_after_end = client.post(
@@ -687,7 +698,8 @@ def test_full_session_runs_within_question_and_follow_up_limits(monkeypatch, tmp
             json={"answer": "结束后继续回答"},
         )
 
-    assert current["status"] == "ended"
+    assert current["status"] == "awaiting_review"
+    assert current["review"] is None
     assert current["mainQuestionCount"] == DEFAULT_MAIN_QUESTIONS
     main_questions = [
         message

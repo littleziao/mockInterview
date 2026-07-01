@@ -157,6 +157,33 @@ describe("App", () => {
             id: 31,
             interviewId: 7,
             style: "study",
+            status: "awaiting_review",
+            mainQuestionCount: 1,
+            currentMainQuestionFollowUps: 1,
+            mainQuestionLimit: 6,
+            followUpLimit: 2,
+            transcript: [
+              {
+                role: "interviewer",
+                content: "先做个自我介绍吧。",
+                kind: "main_question",
+                mainQuestionIndex: 0
+              },
+              {
+                role: "candidate",
+                content: "我负责简历分析和 AI Provider 接入。",
+                kind: "",
+                mainQuestionIndex: 0
+              }
+            ]
+          });
+        }
+
+        if (url.match(/\/interview-sessions\/\d+\/review$/) && init?.method === "POST") {
+          return Response.json({
+            id: 31,
+            interviewId: 7,
+            style: "study",
             status: "ended",
             mainQuestionCount: 1,
             currentMainQuestionFollowUps: 1,
@@ -321,6 +348,10 @@ describe("App", () => {
     expect(screen.queryByLabelText("目标岗位")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "手动结束" }));
+    expect(await screen.findByText("面试已结束，请确认是否生成复盘。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "提交回答" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "生成复盘" }));
+
     expect(await screen.findByRole("heading", { name: "面试复盘" })).toBeInTheDocument();
     expect(screen.getByText("整体能说明项目背景，但技术取舍和结果指标还可以加强。")).toBeInTheDocument();
     expect(screen.getByLabelText("六维能力评分雷达图")).toHaveTextContent("专业知识准确性");

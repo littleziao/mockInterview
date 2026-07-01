@@ -387,20 +387,29 @@ def _ended_session_from(session: InterviewSession) -> InterviewSession:
     )
 
 
-def _finalize_session_with_review(
+def _awaiting_review_session_from(session: InterviewSession) -> InterviewSession:
+    return InterviewSession(
+        id=session.id,
+        interview_id=session.interview_id,
+        style=session.style,
+        status="awaiting_review",
+        transcript=list(session.transcript),
+        main_question_count=session.main_question_count,
+        current_main_question_follow_ups=session.current_main_question_follow_ups,
+    )
+
+
+def _generate_review_for_session(
     *,
     session: InterviewSession,
     interview: InterviewRecord,
     active_provider: AIProviderSettings,
 ) -> InterviewSessionPayload:
-    ended_session = _ended_session_from(session)
-    update_session(ended_session)
-
-    payload = _to_session_payload(ended_session)
+    payload = _to_session_payload(session)
     try:
         review = generate_interview_review_with_provider(
             active_provider,
-            session=ended_session,
+            session=session,
             analysis=interview.analysis,
             target_role=interview.target_role,
         )
@@ -408,7 +417,10 @@ def _finalize_session_with_review(
         payload.review_error = str(error)
         return payload
 
+    ended_session = _ended_session_from(session)
+    update_session(ended_session)
     save_completed_interview(ended_session, review)
+    payload = _to_session_payload(ended_session)
     payload.review = _to_review_payload(review)
     return payload
 
@@ -482,7 +494,7 @@ def post_interview_session_answer(
     if session is None:
         raise HTTPException(status_code=404, detail="进行中面试不存在")
     if session.status != "in_progress":
-        raise HTTPException(status_code=400, detail="该面试已结束，无法继续作答")
+        raise HTTPException(status_code=400, detail="该面试已结束或等待复盘确认，无法继续作答")
 
     answer = payload.answer.strip()
     if not answer:
@@ -524,11 +536,9 @@ def post_interview_session_answer(
             main_question_count=main_question_count,
             current_main_question_follow_ups=follow_ups,
         )
-        return _finalize_session_with_review(
-            session=ending_session,
-            interview=interview,
-            active_provider=active_provider,
-        )
+        awaiting_review_session = _awaiting_review_session_from(ending_session)
+        update_session(awaiting_review_session)
+        return _to_session_payload(awaiting_review_session)
 
     try:
         action = generate_next_interviewer_action_with_provider(
@@ -559,11 +569,9 @@ def post_interview_session_answer(
             main_question_count=main_question_count,
             current_main_question_follow_ups=follow_ups,
         )
-        return _finalize_session_with_review(
-            session=ending_session,
-            interview=interview,
-            active_provider=active_provider,
-        )
+        awaiting_review_session = _awaiting_review_session_from(ending_session)
+        update_session(awaiting_review_session)
+        return _to_session_payload(awaiting_review_session)
 
     advanced_session = InterviewSession(
         id=session_with_answer.id,
@@ -584,15 +592,29 @@ def post_interview_session_end(session_id: int) -> InterviewSessionPayload:
     if session is None:
         raise HTTPException(status_code=404, detail="进行中面试不存在")
     if session.status != "in_progress":
-        raise HTTPException(status_code=400, detail="该面试已结束")
+        raise HTTPException(status_code=400, detail="该面试已结束或等待复盘确认")
+
+    awaiting_review_session = _awaiting_review_session_from(session)
+    update_session(awaiting_review_session)
+    return _to_session_payload(awaiting_review_session)
+
+
+@app.post("/interview-sessions/{session_id}/review", response_model=InterviewSessionPayload)
+def post_interview_session_review(session_id: int) -> InterviewSessionPayload:
+    session = read_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="进行中面试不存在")
+    if session.status == "ended":
+        return _to_session_payload(session)
+    if session.status != "awaiting_review":
+        raise HTTPException(status_code=400, detail="请先结束面试，再生成复盘")
 
     interview = read_interview(session.interview_id)
     if interview is None:
         raise HTTPException(status_code=404, detail="面试记录不存在")
-
     active_provider = _require_active_provider()
 
-    return _finalize_session_with_review(
+    return _generate_review_for_session(
         session=session,
         interview=interview,
         active_provider=active_provider,

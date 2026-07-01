@@ -96,7 +96,7 @@ type InterviewSession = {
   id: number;
   interviewId: number;
   style: InterviewSessionStyle;
-  status: "in_progress" | "ended";
+  status: "in_progress" | "awaiting_review" | "ended";
   mainQuestionCount: number;
   currentMainQuestionFollowUps: number;
   mainQuestionLimit: number;
@@ -556,12 +556,15 @@ function NewInterviewFlow({ step, onNavigateStep }: { step: NewInterviewStep; on
   const [interviewError, setInterviewError] = useState("");
   const [isSubmittingAnswer, setIsSubmittingAnswer] = useState(false);
   const [isEndingSession, setIsEndingSession] = useState(false);
+  const [isGeneratingReview, setIsGeneratingReview] = useState(false);
 
   function applySessionUpdate(nextSession: InterviewSession) {
     setSession(nextSession);
     if (nextSession.status === "ended" && nextSession.review) {
       setWorkflowMessage("复盘已生成，可查看学习建议并导出 Markdown");
       onNavigateStep("review");
+    } else if (nextSession.status === "awaiting_review") {
+      setWorkflowMessage("面试已结束，请确认是否生成复盘");
     }
   }
 
@@ -755,12 +758,35 @@ function NewInterviewFlow({ step, onNavigateStep }: { step: NewInterviewStep; on
       const nextSession = (await response.json()) as InterviewSession;
       applySessionUpdate(nextSession);
       if (!nextSession.review) {
-        setWorkflowMessage("面试已结束，完整对话上下文已保留");
+        setWorkflowMessage("面试已结束，请确认是否生成复盘");
       }
     } catch (error) {
       setInterviewError(error instanceof Error ? error.message : "结束面试失败");
     } finally {
       setIsEndingSession(false);
+    }
+  }
+
+  async function generateReview() {
+    if (!session || session.status !== "awaiting_review") {
+      return;
+    }
+
+    setIsGeneratingReview(true);
+    setInterviewError("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/interview-sessions/${session.id}/review`, {
+        method: "POST"
+      });
+      if (!response.ok) {
+        const detail = (await response.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(detail?.detail ?? "生成复盘失败");
+      }
+      applySessionUpdate((await response.json()) as InterviewSession);
+    } catch (error) {
+      setInterviewError(error instanceof Error ? error.message : "生成复盘失败");
+    } finally {
+      setIsGeneratingReview(false);
     }
   }
 
@@ -1086,9 +1112,11 @@ function NewInterviewFlow({ step, onNavigateStep }: { step: NewInterviewStep; on
           answerDraft={answerDraft}
           interviewError={interviewError}
           isEndingSession={isEndingSession}
+          isGeneratingReview={isGeneratingReview}
           isSubmittingAnswer={isSubmittingAnswer}
           onAnswerChange={setAnswerDraft}
           onEnd={endInterview}
+          onGenerateReview={generateReview}
           onSubmit={submitAnswer}
           session={session}
         />
@@ -1332,23 +1360,28 @@ function InterviewConversation({
   answerDraft,
   interviewError,
   isEndingSession,
+  isGeneratingReview,
   isSubmittingAnswer,
   onAnswerChange,
   onEnd,
+  onGenerateReview,
   onSubmit,
   session
 }: {
   answerDraft: string;
   interviewError: string;
   isEndingSession: boolean;
+  isGeneratingReview: boolean;
   isSubmittingAnswer: boolean;
   onAnswerChange: (value: string) => void;
   onEnd: () => void;
+  onGenerateReview: () => void;
   onSubmit: () => void;
   session: InterviewSession;
 }) {
   const styleLabel = session.style === "pressure" ? "压力面" : "学习梳理面";
-  const ended = session.status !== "in_progress";
+  const awaitingReview = session.status === "awaiting_review";
+  const conversationClosed = session.status !== "in_progress";
   const latestInterviewerIndex = (() => {
     for (let index = session.transcript.length - 1; index >= 0; index -= 1) {
       if (session.transcript[index].role === "interviewer") {
@@ -1371,7 +1404,7 @@ function InterviewConversation({
             </p>
           </div>
         </div>
-        <button className="dangerButton" disabled={ended || isEndingSession} onClick={onEnd} type="button">
+        <button className="dangerButton" disabled={conversationClosed || isEndingSession} onClick={onEnd} type="button">
           <CircleStop size={16} aria-hidden="true" />
           {isEndingSession ? "结束中" : "手动结束"}
         </button>
@@ -1380,7 +1413,7 @@ function InterviewConversation({
       <ol className="transcript" aria-label="面试对话记录">
         {session.transcript.map((message, index) => {
           const isInterviewer = message.role === "interviewer";
-          const isCurrent = isInterviewer && index === latestInterviewerIndex && !ended;
+          const isCurrent = isInterviewer && index === latestInterviewerIndex && !conversationClosed;
           return (
             <li
               className={isInterviewer ? "transcriptItem interviewer" : "transcriptItem candidate"}
@@ -1398,9 +1431,17 @@ function InterviewConversation({
         })}
       </ol>
 
-      {ended ? (
+      {conversationClosed ? (
         <div className="conversationFooter">
-          <div className="endedState">面试已结束，完整对话上下文已保留。</div>
+          <div className="endedState">
+            {awaitingReview ? "面试已结束，请确认是否生成复盘。" : "面试已结束，完整对话上下文已保留。"}
+          </div>
+          {awaitingReview ? (
+            <button className="primaryButton" disabled={isGeneratingReview} onClick={onGenerateReview} type="button">
+              <Sparkles size={16} aria-hidden="true" />
+              {isGeneratingReview ? "生成中" : "生成复盘"}
+            </button>
+          ) : null}
           {session.reviewError ? (
             <div className="workflowMessage failure">复盘生成失败：{session.reviewError}</div>
           ) : null}

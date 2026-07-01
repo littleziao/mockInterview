@@ -13,7 +13,7 @@
     "build": "npm --workspace @mock-interview/core run build && npm --workspace @mock-interview/web run build",
     "lint": "npm --workspace @mock-interview/core run lint && npm --workspace @mock-interview/web run lint",
     "test": "npm run test:api && npm run test:web",
-    "test:api": "conda run -n base python -m pytest apps/api/tests",
+    "test:api": "conda run --no-capture-output -n base python -m pytest apps/api/tests",
     "test:web": "npm --workspace @mock-interview/web run test",
     "typecheck": "npm --workspace @mock-interview/core run typecheck && npm --workspace @mock-interview/web run typecheck"
   },
