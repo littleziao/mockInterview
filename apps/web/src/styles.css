@@ -623,6 +623,138 @@ fieldset {
   font-size: 13px;
 }
 
+.interviewConversation {
+  margin-top: 18px;
+  padding: 20px;
+  border: 1px solid #c8d8d3;
+  border-radius: 10px;
+  background: #f4faf7;
+}
+
+.conversationHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.conversationHeading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.conversationHeading svg {
+  color: #1f6f63;
+}
+
+.conversationHeading h3 {
+  font-size: 16px;
+}
+
+.conversationHeading p {
+  margin-top: 4px;
+  font-size: 13px;
+  color: #6f7b76;
+}
+
+.transcript {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  max-height: 420px;
+  margin: 0;
+  padding: 16px;
+  border-radius: 8px;
+  background: #ffffff;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.transcriptItem {
+  display: grid;
+  gap: 6px;
+}
+
+.transcriptItem.interviewer {
+  justify-items: start;
+}
+
+.transcriptItem.candidate {
+  justify-items: end;
+}
+
+.transcriptMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #6f7b76;
+}
+
+.roleTag {
+  font-weight: 700;
+  color: #45524d;
+}
+
+.kindTag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #e6efe9;
+  color: #1f6f63;
+  font-weight: 700;
+}
+
+.transcriptBubble {
+  max-width: 80%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f3f6f2;
+  color: #17211f;
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.transcriptItem.candidate .transcriptBubble {
+  background: #e9f3ef;
+  border: 1px solid #cfe5dd;
+}
+
+.transcriptItem.interviewer .transcriptBubble.current {
+  background: #eafaf2;
+  border: 1px solid #7fcfae;
+  box-shadow: 0 10px 24px rgba(31, 111, 99, 0.12);
+}
+
+.conversationFooter {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.answerEditor textarea {
+  min-height: 96px;
+  padding: 12px;
+}
+
+.endedState {
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid #d8dfda;
+  background: #f7f9f6;
+  color: #45524d;
+  font-size: 13px;
+}
+
+.workflowMessage.failure {
+  border-color: #ead0c8;
+  color: #8b3d27;
+  background: #fff3ef;
+}
+
 @media (max-width: 1120px) {
   .appShell {
     grid-template-columns: 220px minmax(0, 1fr);

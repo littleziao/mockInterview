@@ -4,15 +4,18 @@ import {
   AlertCircle,
   BookOpenText,
   CheckCircle2,
+  CircleStop,
   ClipboardList,
   FileUp,
   History,
   Home,
   KeyRound,
   MessageSquareText,
+  MessagesSquare,
   Plus,
   Radar,
   Save,
+  Send,
   Settings,
   Sparkles,
   Trash2,
@@ -74,8 +77,34 @@ type ResumeAnalysis = {
   unclearPoints: string[];
   targetRoleNotes: string;
   focusTopics: string[];
-  lowPriorityFollowUpTopics: string[];
+ lowPriorityFollowUpTopics: string[];
 };
+
+type InterviewSessionStyle = "study" | "pressure";
+
+type TranscriptMessage = {
+  role: "interviewer" | "candidate";
+  content: string;
+  kind: "" | "main_question" | "follow_up" | "clarify";
+  mainQuestionIndex: number;
+};
+
+type InterviewSession = {
+  id: number;
+  interviewId: number;
+  style: InterviewSessionStyle;
+  status: "in_progress" | "ended";
+  mainQuestionCount: number;
+  currentMainQuestionFollowUps: number;
+  mainQuestionLimit: number;
+  followUpLimit: number;
+  transcript: TranscriptMessage[];
+};
+
+const interviewStyleOptions: { value: InterviewSessionStyle; label: string }[] = [
+  { value: "study", label: "学习梳理面" },
+  { value: "pressure", label: "压力面" }
+];
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -422,8 +451,16 @@ function SetupPanel() {
   const [lastImportedFileName, setLastImportedFileName] = useState("");
   const [fileError, setFileError] = useState("");
   const [workflowMessage, setWorkflowMessage] = useState("");
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [isSavingInterview, setIsSavingInterview] = useState(false);
+ const [isAnalyzing, setIsAnalyzing] = useState(false);
+ const [isSavingInterview, setIsSavingInterview] = useState(false);
+  const [interviewStyle, setInterviewStyle] = useState<InterviewSessionStyle>("study");
+  const [savedInterviewId, setSavedInterviewId] = useState<number | null>(null);
+  const [session, setSession] = useState<InterviewSession | null>(null);
+  const [answerDraft, setAnswerDraft] = useState("");
+  const [interviewError, setInterviewError] = useState("");
+  const [isStartingSession, setIsStartingSession] = useState(false);
+  const [isSubmittingAnswer, setIsSubmittingAnswer] = useState(false);
+  const [isEndingSession, setIsEndingSession] = useState(false);
 
   async function importMarkdownFile(file: File | undefined) {
     if (!file) {
@@ -514,12 +551,95 @@ function SetupPanel() {
         const detail = (await response.json().catch(() => null)) as { detail?: string } | null;
         throw new Error(detail?.detail ?? "保存面试记录失败");
       }
-      const savedInterview = (await response.json()) as { id: number };
+     const savedInterview = (await response.json()) as { id: number };
+      setSavedInterviewId(savedInterview.id);
       setWorkflowMessage(`简历分析已确认并保存为面试记录 #${savedInterview.id}`);
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : "保存面试记录失败");
     } finally {
       setIsSavingInterview(false);
+    }
+  }
+
+  async function startInterview() {
+    if (savedInterviewId === null) {
+      return;
+    }
+
+    setIsStartingSession(true);
+    setInterviewError("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/interviews/${savedInterviewId}/sessions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ style: interviewStyle })
+      });
+      if (!response.ok) {
+        const detail = (await response.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(detail?.detail ?? "启动面试失败");
+      }
+      setSession((await response.json()) as InterviewSession);
+      setWorkflowMessage("面试已开始，请逐题作答");
+    } catch (error) {
+      setInterviewError(error instanceof Error ? error.message : "启动面试失败");
+    } finally {
+      setIsStartingSession(false);
+    }
+  }
+
+  async function submitAnswer() {
+    if (!session || session.status !== "in_progress") {
+      return;
+    }
+
+    const answer = answerDraft.trim();
+    if (!answer) {
+      setInterviewError("回答内容不能为空");
+      return;
+    }
+
+    setIsSubmittingAnswer(true);
+    setInterviewError("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/interview-sessions/${session.id}/answers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ answer })
+      });
+      if (!response.ok) {
+        const detail = (await response.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(detail?.detail ?? "提交回答失败");
+      }
+      setSession((await response.json()) as InterviewSession);
+      setAnswerDraft("");
+    } catch (error) {
+      setInterviewError(error instanceof Error ? error.message : "提交回答失败");
+    } finally {
+      setIsSubmittingAnswer(false);
+    }
+  }
+
+  async function endInterview() {
+    if (!session) {
+      return;
+    }
+
+    setIsEndingSession(true);
+    setInterviewError("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/interview-sessions/${session.id}/end`, {
+        method: "POST"
+      });
+      if (!response.ok) {
+        const detail = (await response.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(detail?.detail ?? "结束面试失败");
+      }
+      setSession((await response.json()) as InterviewSession);
+      setWorkflowMessage("面试已结束，完整对话上下文已保留");
+    } catch (error) {
+      setInterviewError(error instanceof Error ? error.message : "结束面试失败");
+    } finally {
+      setIsEndingSession(false);
     }
   }
 
@@ -569,23 +689,30 @@ function SetupPanel() {
           </label>
 
           <fieldset>
-            <legend>面试模式</legend>
-            <div className="segmented">
-              <button className="selected" type="button">
+           <legend>面试模式</legend>
+           <div className="segmented">
+              <button className="selected" disabled={Boolean(session)} type="button">
                 单轮面试
               </button>
-              <button type="button">多轮面试</button>
-            </div>
+              <button disabled={Boolean(session)} type="button">多轮面试</button>
+           </div>
           </fieldset>
 
           <fieldset>
-            <legend>面试风格</legend>
-            <div className="segmented">
-              <button className="selected" type="button">
-                学习梳理面
-              </button>
-              <button type="button">压力面</button>
-            </div>
+           <legend>面试风格</legend>
+           <div className="segmented">
+              {interviewStyleOptions.map((option) => (
+                <button
+                  className={option.value === interviewStyle ? "selected" : ""}
+                  disabled={Boolean(session)}
+                  key={option.value}
+                  onClick={() => setInterviewStyle(option.value)}
+                  type="button"
+                >
+                  {option.label}
+                </button>
+              ))}
+           </div>
           </fieldset>
 
           <div className="configNote">
@@ -607,10 +734,21 @@ function SetupPanel() {
               <h3>简历分析确认</h3>
               <p>确认前可以修正 AI 对背景、项目和追问方向的理解。</p>
             </div>
-            <button className="primaryButton" disabled={isSavingInterview} onClick={confirmInterview} type="button">
-              <Save size={16} aria-hidden="true" />
-              {isSavingInterview ? "保存中" : "确认并保存"}
-            </button>
+           <button className="primaryButton" disabled={isSavingInterview} onClick={confirmInterview} type="button">
+             <Save size={16} aria-hidden="true" />
+             {isSavingInterview ? "保存中" : "确认并保存"}
+           </button>
+            {savedInterviewId !== null ? (
+              <button
+                className="primaryButton"
+                disabled={isStartingSession || Boolean(session)}
+                onClick={startInterview}
+                type="button"
+              >
+                <MessagesSquare size={16} aria-hidden="true" />
+                {isStartingSession ? "启动中" : "开始面试"}
+              </button>
+            ) : null}
           </div>
 
           <div className="analysisGrid">
@@ -686,10 +824,132 @@ function SetupPanel() {
                 value={listToLines(analysis.lowPriorityFollowUpTopics)}
               />
             </label>
-          </div>
-        </div>
+         </div>
+       </div>
+     ) : null}
+      {session ? (
+        <InterviewConversation
+          answerDraft={answerDraft}
+          interviewError={interviewError}
+          isEndingSession={isEndingSession}
+          isSubmittingAnswer={isSubmittingAnswer}
+          onAnswerChange={setAnswerDraft}
+          onEnd={endInterview}
+          onSubmit={submitAnswer}
+          session={session}
+        />
       ) : null}
     </section>
+  );
+}
+
+function transcriptKindLabel(kind: TranscriptMessage["kind"]) {
+  if (kind === "main_question") {
+    return "主问题";
+  }
+  if (kind === "follow_up") {
+    return "追问";
+  }
+  if (kind === "clarify") {
+    return "澄清";
+  }
+  return "提问";
+}
+
+function InterviewConversation({
+  answerDraft,
+  interviewError,
+  isEndingSession,
+  isSubmittingAnswer,
+  onAnswerChange,
+  onEnd,
+  onSubmit,
+  session
+}: {
+  answerDraft: string;
+  interviewError: string;
+  isEndingSession: boolean;
+  isSubmittingAnswer: boolean;
+  onAnswerChange: (value: string) => void;
+  onEnd: () => void;
+  onSubmit: () => void;
+  session: InterviewSession;
+}) {
+  const styleLabel = session.style === "pressure" ? "压力面" : "学习梳理面";
+  const ended = session.status !== "in_progress";
+  const latestInterviewerIndex = (() => {
+    for (let index = session.transcript.length - 1; index >= 0; index -= 1) {
+      if (session.transcript[index].role === "interviewer") {
+        return index;
+      }
+    }
+    return -1;
+  })();
+  const totalMainQuestions = Math.max(session.mainQuestionCount, 0);
+
+  return (
+    <div className="interviewConversation" aria-label="面试对话">
+      <div className="conversationHeader">
+        <div className="conversationHeading">
+          <MessagesSquare size={20} aria-hidden="true" />
+          <div>
+            <h3>面试对话</h3>
+            <p>
+              {styleLabel} · 第 {totalMainQuestions} / {session.mainQuestionLimit} 个主问题
+            </p>
+          </div>
+        </div>
+        <button className="dangerButton" disabled={ended || isEndingSession} onClick={onEnd} type="button">
+          <CircleStop size={16} aria-hidden="true" />
+          {isEndingSession ? "结束中" : "手动结束"}
+        </button>
+      </div>
+
+      <ol className="transcript" aria-label="面试对话记录">
+        {session.transcript.map((message, index) => {
+          const isInterviewer = message.role === "interviewer";
+          const isCurrent = isInterviewer && index === latestInterviewerIndex && !ended;
+          return (
+            <li
+              className={isInterviewer ? "transcriptItem interviewer" : "transcriptItem candidate"}
+              key={index}
+            >
+              <div className="transcriptMeta">
+                <span className="roleTag">{isInterviewer ? "面试官" : "我的回答"}</span>
+                {isInterviewer ? <span className="kindTag">{transcriptKindLabel(message.kind)}</span> : null}
+              </div>
+              <div className={isCurrent ? "transcriptBubble current" : "transcriptBubble"}>
+                {message.content}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+
+      {ended ? (
+        <div className="conversationFooter">
+          <div className="endedState">面试已结束，完整对话上下文已保留。</div>
+        </div>
+      ) : (
+        <div className="conversationFooter">
+          <label className="answerEditor">
+            <span>文字回答</span>
+            <textarea
+              onChange={(event) => onAnswerChange(event.target.value)}
+              placeholder="用文字回答当前问题，第一版不支持语音"
+              rows={4}
+              value={answerDraft}
+            />
+          </label>
+          <button className="primaryButton" disabled={isSubmittingAnswer} onClick={onSubmit} type="button">
+            <Send size={16} aria-hidden="true" />
+            {isSubmittingAnswer ? "提交中" : "提交回答"}
+          </button>
+        </div>
+      )}
+
+      {interviewError ? <div className="workflowMessage failure">{interviewError}</div> : null}
+    </div>
   );
 }
 

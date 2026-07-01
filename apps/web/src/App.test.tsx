@@ -4,8 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
 
+let interviewAnswerCount = 0;
+
 describe("App", () => {
   beforeEach(() => {
+    interviewAnswerCount = 0;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -78,6 +81,85 @@ describe("App", () => {
             resumeMarkdown: body.resumeMarkdown,
             targetRole: body.targetRole,
             analysis: body.analysis
+          });
+        }
+
+        if (url.match(/\/interviews\/\d+\/sessions$/) && init?.method === "POST") {
+          return Response.json({
+            id: 31,
+            interviewId: 7,
+            style: "study",
+            status: "in_progress",
+            mainQuestionCount: 1,
+            currentMainQuestionFollowUps: 0,
+            mainQuestionLimit: 6,
+            followUpLimit: 2,
+            transcript: [
+              {
+                role: "interviewer",
+                content: "先做个自我介绍吧。",
+                kind: "main_question",
+                mainQuestionIndex: 0
+              }
+            ]
+          });
+        }
+
+        if (url.match(/\/interview-sessions\/\d+\/answers$/) && init?.method === "POST") {
+          interviewAnswerCount += 1;
+          return Response.json({
+            id: 31,
+            interviewId: 7,
+            style: "study",
+            status: "in_progress",
+            mainQuestionCount: 1,
+            currentMainQuestionFollowUps: 1,
+            mainQuestionLimit: 6,
+            followUpLimit: 2,
+            transcript: [
+              {
+                role: "interviewer",
+                content: "先做个自我介绍吧。",
+                kind: "main_question",
+                mainQuestionIndex: 0
+              },
+              {
+                role: "candidate",
+                content: JSON.parse(String(init.body)).answer,
+                kind: "",
+                mainQuestionIndex: 0
+              },
+              {
+                role: "interviewer",
+                content:
+                  interviewAnswerCount === 1
+                    ? "你提到 SQLite Repository，能说说它解决了什么问题吗？"
+                    : "好的，我们换个方向。",
+                kind: interviewAnswerCount === 1 ? "follow_up" : "clarify",
+                mainQuestionIndex: 0
+              }
+            ]
+          });
+        }
+
+        if (url.match(/\/interview-sessions\/\d+\/end$/) && init?.method === "POST") {
+          return Response.json({
+            id: 31,
+            interviewId: 7,
+            style: "study",
+            status: "ended",
+            mainQuestionCount: 1,
+            currentMainQuestionFollowUps: 1,
+            mainQuestionLimit: 6,
+            followUpLimit: 2,
+            transcript: [
+              {
+                role: "interviewer",
+                content: "先做个自我介绍吧。",
+                kind: "main_question",
+                mainQuestionIndex: 0
+              }
+            ]
           });
         }
 
