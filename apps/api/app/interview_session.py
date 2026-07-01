@@ -13,10 +13,11 @@ from .resume_analysis import initialize_resume_analysis_schema
 DEFAULT_MAIN_QUESTIONS = 6
 DEFAULT_MAX_FOLLOW_UPS = 2
 
-INTERVIEWER_ACTION_KINDS = ("main_question", "follow_up", "clarify")
+INTERVIEWER_ACTION_KINDS = ("main_question", "follow_up", "clarify", "end_interview")
 
 FALLBACK_NEXT_MAIN_QUESTION = "这个问题先到这里。我们换个方向，聊聊另一个和目标岗位相关的核心项目或技术取舍。"
 FALLBACK_FINAL_CLARIFY = "主要问题已经覆盖完了。最后你还有什么想补充、澄清或特别希望我了解的吗？"
+FALLBACK_END_INTERVIEW = "本场面试的信息已经足够，我们进入复盘。"
 
 
 ACTION_FIELD_ALIASES = {
@@ -35,6 +36,7 @@ ACTION_KIND_ALIASES = {
     ),
     "follow_up": ("follow_up", "followup", "follow-up", "deepen", "追问"),
     "clarify": ("clarify", "clarification", "rephrase", "narrow", "澄清", "换问法"),
+    "end_interview": ("end_interview", "end", "finish", "complete", "结束", "收尾"),
 }
 
 
@@ -371,14 +373,19 @@ def resolve_interviewer_action(
         return InterviewerAction(kind="main_question", message=action.message)
 
     main_question_cap_reached = session.main_question_count >= max_main_questions
-    follow_up_cap_reached = session.current_main_question_follow_ups >= max_follow_ups
+    interaction_cap_reached = session.current_main_question_follow_ups >= max_follow_ups
 
-    if action.kind == "follow_up" and follow_up_cap_reached:
+    if action.kind == "end_interview":
+        return action
+
+    if action.kind in ("follow_up", "clarify") and interaction_cap_reached:
         if main_question_cap_reached:
-            return InterviewerAction(kind="clarify", message=FALLBACK_FINAL_CLARIFY)
+            return InterviewerAction(kind="end_interview", message=FALLBACK_END_INTERVIEW)
         return InterviewerAction(kind="main_question", message=FALLBACK_NEXT_MAIN_QUESTION)
 
     if action.kind == "main_question" and main_question_cap_reached:
+        if interaction_cap_reached:
+            return InterviewerAction(kind="end_interview", message=FALLBACK_END_INTERVIEW)
         return InterviewerAction(kind="clarify", message=FALLBACK_FINAL_CLARIFY)
 
     return action
@@ -400,11 +407,11 @@ def apply_interviewer_action(
         new_main_question_count = session.main_question_count + 1
         new_follow_ups = 0
         message_index = new_main_question_count - 1
-    elif action.kind == "follow_up":
+    elif action.kind in ("follow_up", "clarify"):
         new_main_question_count = session.main_question_count
         new_follow_ups = session.current_main_question_follow_ups + 1
         message_index = main_question_index
-    else:  # clarify
+    else:  # end_interview
         new_main_question_count = session.main_question_count
         new_follow_ups = session.current_main_question_follow_ups
         message_index = main_question_index

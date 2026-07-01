@@ -220,7 +220,7 @@ def test_answer_produces_lightweight_clarify(monkeypatch, tmp_path: Path) -> Non
 
     latest = _latest_interviewer(advanced)
     assert latest["kind"] == "clarify"
-    assert advanced["currentMainQuestionFollowUps"] == 1
+    assert advanced["currentMainQuestionFollowUps"] == 2
 
 
 def test_each_answer_persists_in_progress_interview(monkeypatch, tmp_path: Path) -> None:
@@ -331,14 +331,12 @@ def test_invalid_review_structure_returns_502_without_ending_session(monkeypatch
     assert _completed_interview_count() == 0
 
 
-def test_last_answer_auto_ends_without_requesting_another_interviewer_action(monkeypatch, tmp_path: Path) -> None:
+def test_last_main_question_answer_can_still_produce_follow_up(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
     monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
 
     with TestClient(app) as client:
-        # invalid-action 会让“继续请求下一题/追问”的旧行为变成 502。
-        # 达到主问题上限后提交回答应直接结束，并只请求复盘。
-        _configure_provider(client, "fake://invalid-action")
+        _configure_provider(client)
         interview_id = _create_confirmed_interview(client)
         session = save_session(
             InterviewSession(
@@ -363,13 +361,56 @@ def test_last_answer_auto_ends_without_requesting_another_interviewer_action(mon
             f"/interview-sessions/{session.id}/answers",
             json={"answer": "这是最后一题的回答。"},
         )
+        advanced = response.json()
+
+    assert response.status_code == 200, response.text
+    assert advanced["status"] == "in_progress"
+    assert advanced["review"] is None
+    assert advanced["mainQuestionCount"] == DEFAULT_MAIN_QUESTIONS
+    assert advanced["currentMainQuestionFollowUps"] == 1
+    assert advanced["transcript"][-1]["role"] == "interviewer"
+    assert advanced["transcript"][-1]["kind"] == "follow_up"
+
+
+def test_interview_hard_ends_when_final_question_interactions_are_exhausted(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        # invalid-action 会让“继续请求下一步动作”的行为变成 502。
+        # 硬上限耗尽后应直接结束并只请求复盘。
+        _configure_provider(client, "fake://invalid-action")
+        interview_id = _create_confirmed_interview(client)
+        session = save_session(
+            InterviewSession(
+                id=0,
+                interview_id=interview_id,
+                style="study",
+                status="in_progress",
+                transcript=[
+                    TranscriptMessage(
+                        role="interviewer",
+                        content="最后一个主问题的第二次追问。",
+                        kind="follow_up",
+                        main_question_index=DEFAULT_MAIN_QUESTIONS - 1,
+                    )
+                ],
+                main_question_count=DEFAULT_MAIN_QUESTIONS,
+                current_main_question_follow_ups=DEFAULT_MAX_FOLLOW_UPS,
+            )
+        )
+
+        response = client.post(
+            f"/interview-sessions/{session.id}/answers",
+            json={"answer": "这是最后一次互动的回答。"},
+        )
         ended = response.json()
 
     assert response.status_code == 200, response.text
     assert ended["status"] == "ended"
     assert ended["review"]["overallEvaluation"]
-    assert ended["transcript"][-1]["role"] == "candidate"
-    assert ended["transcript"][-1]["content"] == "这是最后一题的回答。"
+    assert ended["transcript"][-1]["role"] == "interviewer"
+    assert ended["transcript"][-1]["kind"] == "end_interview"
 
 
 def test_starting_session_requires_existing_interview(monkeypatch, tmp_path: Path) -> None:
@@ -521,7 +562,7 @@ def test_follow_up_beyond_limit_uses_real_new_main_question_fallback() -> None:
     assert follow_ups == 0
 
 
-def test_main_question_beyond_limit_is_downgraded_to_clarify() -> None:
+def test_main_question_beyond_limit_hard_ends_after_interaction_limit() -> None:
     session = InterviewSession(
         id=1,
         interview_id=1,
@@ -537,13 +578,12 @@ def test_main_question_beyond_limit_is_downgraded_to_clarify() -> None:
         session,
         starting=False,
     )
-    assert resolved.kind == "clarify"
-    assert resolved.message == FALLBACK_FINAL_CLARIFY
+    assert resolved.kind == "end_interview"
+    assert resolved.message != FALLBACK_FINAL_CLARIFY
     assert resolved.message != "再来一题"
 
     message, main_question_count, follow_ups = apply_interviewer_action(session, resolved)
-    assert message.kind == "clarify"
-    assert message.content == FALLBACK_FINAL_CLARIFY
+    assert message.kind == "end_interview"
     assert main_question_count == DEFAULT_MAIN_QUESTIONS
     assert follow_ups == DEFAULT_MAX_FOLLOW_UPS
 

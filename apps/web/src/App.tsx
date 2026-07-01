@@ -88,7 +88,7 @@ type NewInterviewStep = "upload" | "analysis" | "interview" | "review";
 type TranscriptMessage = {
   role: "interviewer" | "candidate";
   content: string;
-  kind: "" | "main_question" | "follow_up" | "clarify";
+  kind: "" | "main_question" | "follow_up" | "clarify" | "end_interview";
   mainQuestionIndex: number;
 };
 
@@ -1321,6 +1321,9 @@ function transcriptKindLabel(kind: TranscriptMessage["kind"]) {
   }
   if (kind === "clarify") {
     return "澄清";
+  }
+  if (kind === "end_interview") {
+    return "收尾";
   }
   return "提问";
 }

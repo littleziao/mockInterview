@@ -39,6 +39,7 @@ from .interview_session import (
     TranscriptMessage,
     apply_interviewer_action,
     append_candidate_answer,
+    InterviewerAction,
     read_session,
     resolve_interviewer_action,
     save_session,
@@ -506,9 +507,25 @@ def post_interview_session_answer(
     # 每次回答后立即保存，保证刷新或重新打开后可继续。
     update_session(session_with_answer)
 
-    if session_with_answer.main_question_count >= DEFAULT_MAIN_QUESTIONS:
+    if (
+        session_with_answer.main_question_count >= DEFAULT_MAIN_QUESTIONS
+        and session_with_answer.current_main_question_follow_ups >= DEFAULT_MAX_FOLLOW_UPS
+    ):
+        message, main_question_count, follow_ups = apply_interviewer_action(
+            session_with_answer,
+            InterviewerAction(kind="end_interview", message="本场面试的信息已经足够，我们进入复盘。"),
+        )
+        ending_session = InterviewSession(
+            id=session_with_answer.id,
+            interview_id=session_with_answer.interview_id,
+            style=session_with_answer.style,
+            status="in_progress",
+            transcript=[*session_with_answer.transcript, message],
+            main_question_count=main_question_count,
+            current_main_question_follow_ups=follow_ups,
+        )
         return _finalize_session_with_review(
-            session=session_with_answer,
+            session=ending_session,
             interview=interview,
             active_provider=active_provider,
         )
@@ -531,6 +548,22 @@ def post_interview_session_answer(
         raise HTTPException(status_code=502, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+    if resolved_action.kind == "end_interview":
+        ending_session = InterviewSession(
+            id=session_with_answer.id,
+            interview_id=session_with_answer.interview_id,
+            style=session_with_answer.style,
+            status="in_progress",
+            transcript=[*session_with_answer.transcript, message],
+            main_question_count=main_question_count,
+            current_main_question_follow_ups=follow_ups,
+        )
+        return _finalize_session_with_review(
+            session=ending_session,
+            interview=interview,
+            active_provider=active_provider,
+        )
 
     advanced_session = InterviewSession(
         id=session_with_answer.id,
