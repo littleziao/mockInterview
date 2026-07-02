@@ -654,6 +654,9 @@ function NewInterviewFlow({
   const [session, setSession] = useState<InterviewSession | null>(null);
   const [answerDraft, setAnswerDraft] = useState("");
   const [interviewError, setInterviewError] = useState("");
+  // 用户提交后、服务端回复前的乐观回答；非 null 期间对话区追加该回答与「正在思考」气泡。
+  const [pendingAnswer, setPendingAnswer] = useState<string | null>(null);
+
   const [isSubmittingAnswer, setIsSubmittingAnswer] = useState(false);
   const [isEndingSession, setIsEndingSession] = useState(false);
   const [isGeneratingReview, setIsGeneratingReview] = useState(false);
@@ -843,6 +846,10 @@ function NewInterviewFlow({
       return;
     }
 
+    // 乐观渲染：用户回答立即进入对话区并显示「面试官正在思考」气泡，
+    // 随后等待服务端返回包含这条回答与下一题的权威 transcript 做整体替换。
+    setPendingAnswer(answer);
+    setAnswerDraft("");
     setIsSubmittingAnswer(true);
     setInterviewError("");
     try {
@@ -856,10 +863,12 @@ function NewInterviewFlow({
         throw new Error(detail?.detail ?? "提交回答失败");
       }
       applySessionUpdate((await response.json()) as InterviewSession);
-      setAnswerDraft("");
     } catch (error) {
+      // 提交失败：回滚乐观消息，把回答内容还给输入框，方便用户改后重发。
+      setAnswerDraft(answer);
       setInterviewError(error instanceof Error ? error.message : "提交回答失败");
     } finally {
+      setPendingAnswer(null);
       setIsSubmittingAnswer(false);
     }
   }
@@ -1351,6 +1360,7 @@ function NewInterviewFlow({
           onEnd={endInterview}
           onGenerateReview={generateReview}
           onSubmit={submitAnswer}
+          pendingAnswer={pendingAnswer}
           session={session}
         />
     </section>
@@ -1989,6 +1999,7 @@ function InterviewConversation({
   onEnd,
   onGenerateReview,
   onSubmit,
+  pendingAnswer,
   session
 }: {
   answerDraft: string;
@@ -2000,6 +2011,7 @@ function InterviewConversation({
   onEnd: () => void;
   onGenerateReview: () => void;
   onSubmit: () => void;
+  pendingAnswer: string | null;
   session: InterviewSession;
 }) {
   const styleLabel = session.style === "pressure" ? "压力面" : "学习梳理面";
@@ -2052,6 +2064,29 @@ function InterviewConversation({
             </li>
           );
         })}
+        {pendingAnswer ? (
+          <>
+            <li className="transcriptItem candidate" key="optimistic-candidate">
+              <div className="transcriptMeta">
+                <span className="roleTag">我的回答</span>
+              </div>
+              <div className="transcriptBubble">{pendingAnswer}</div>
+            </li>
+            <li className="transcriptItem interviewer" key="optimistic-thinking">
+              <div className="transcriptMeta">
+                <span className="roleTag">面试官</span>
+              </div>
+              <div className="transcriptBubble thinkingBubble">
+                <span className="thinkingLabel">正在思考</span>
+                <span className="thinkingDots" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+              </div>
+            </li>
+          </>
+        ) : null}
       </ol>
 
       {conversationClosed ? (

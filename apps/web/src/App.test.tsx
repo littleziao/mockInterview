@@ -33,6 +33,10 @@ let roundsProgressMock: MockRoundProgress[] = [];
 let sessionRoundKindMock = "peer_technical";
 let sessionRoundTitleMock = "同事技术面";
 
+// 默认 fetch mock 对 /answers 同步返回。乐观渲染需要验证「fetch 已发出但响应未到达」的中间态，
+// 因此允许单个测试注入自定义处理器（例如挂起响应或返回失败状态）。
+let answersHandlerOverride: ((init?: RequestInit) => Promise<Response> | Response) | null = null;
+
 const historyPayloadMock = {
   targetRoles: ["前端工程师", "后端工程师"],
   records: [
@@ -124,6 +128,31 @@ const historyPayloadMock = {
   ]
 };
 
+// 服务端对一次回答的权威响应：transcript 同时包含用户刚提交的回答与面试官的新消息。
+// 乐观渲染测试用它作为「整体替换」的目标数据。
+function buildAnswerResponse(answer: string) {
+  return {
+    id: 31,
+    interviewId: 7,
+    style: "study",
+    status: "in_progress",
+    mainQuestionCount: 1,
+    currentMainQuestionFollowUps: 1,
+    mainQuestionLimit: 6,
+    followUpLimit: 2,
+    transcript: [
+      { role: "interviewer", content: "先做个自我介绍吧。", kind: "main_question", mainQuestionIndex: 0 },
+      { role: "candidate", content: answer, kind: "", mainQuestionIndex: 0 },
+      {
+        role: "interviewer",
+        content: "你提到 SQLite Repository，能说说它解决了什么问题吗？",
+        kind: "follow_up",
+        mainQuestionIndex: 0
+      }
+    ]
+  };
+}
+
 describe("App", () => {
   beforeEach(() => {
     interviewAnswerCount = 0;
@@ -131,6 +160,7 @@ describe("App", () => {
     roundsProgressMock = [];
     sessionRoundKindMock = "peer_technical";
     sessionRoundTitleMock = "同事技术面";
+    answersHandlerOverride = null;
     window.location.hash = "#/";
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
@@ -264,6 +294,9 @@ describe("App", () => {
         }
 
         if (url.match(/\/interview-sessions\/\d+\/answers$/) && init?.method === "POST") {
+          if (answersHandlerOverride) {
+            return Promise.resolve(answersHandlerOverride(init));
+          }
           interviewAnswerCount += 1;
           return Response.json({
             id: 31,
@@ -846,5 +879,103 @@ describe("App", () => {
 
     expect(await screen.findByText(/全部轮次已完成/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /进入下一轮/ })).not.toBeInTheDocument();
+  });
+
+  it("提交回答后用户回答与思考气泡立即出现，先于服务端回复", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "解析简历" }));
+    await screen.findByRole("heading", { name: "简历解析与配置" });
+    await user.click(screen.getByRole("button", { name: "确认配置并开始面试" }));
+    await screen.findByRole("heading", { name: "开始面试" });
+
+    // 让服务端响应挂起：用受控的 Promise，测试期间永不 resolve，
+    // 以便断言「fetch 已发出但响应未到达」的乐观渲染中间态。
+    let releaseServer!: () => void;
+    answersHandlerOverride = () =>
+      new Promise<Response>((resolve) => {
+        releaseServer = () => resolve(Response.json(buildAnswerResponse("我负责简历分析与 Provider 接入")));
+      });
+
+    // 查询限定在对话记录区域内，避免误匹配回答输入框里的同名文本。
+    const transcript = screen.getByLabelText("面试对话记录");
+
+    await user.type(screen.getByLabelText("文字回答"), "我负责简历分析与 Provider 接入");
+    await user.click(screen.getByRole("button", { name: "提交回答" }));
+
+    // 乐观渲染：用户回答立即进入对话记录，面试官「正在思考」气泡同时出现，
+    // 而服务端响应尚未到达（面试官的真实追问还未出现）。
+    await waitFor(() => {
+      expect(within(transcript).getByText("我负责简历分析与 Provider 接入")).toBeInTheDocument();
+    });
+    expect(within(transcript).getByText(/正在思考/)).toBeInTheDocument();
+    expect(within(transcript).queryByText("你提到 SQLite Repository，能说说它解决了什么问题吗？")).not.toBeInTheDocument();
+
+    releaseServer();
+  });
+
+  it("服务端回复到达后用权威 transcript 整体替换乐观消息与思考气泡", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "解析简历" }));
+    await screen.findByRole("heading", { name: "简历解析与配置" });
+    await user.click(screen.getByRole("button", { name: "确认配置并开始面试" }));
+    await screen.findByRole("heading", { name: "开始面试" });
+
+    let releaseServer!: () => void;
+    answersHandlerOverride = () =>
+      new Promise<Response>((resolve) => {
+        releaseServer = () => resolve(Response.json(buildAnswerResponse("我负责简历分析与 Provider 接入")));
+      });
+
+    const transcript = screen.getByLabelText("面试对话记录");
+
+    await user.type(screen.getByLabelText("文字回答"), "我负责简历分析与 Provider 接入");
+    await user.click(screen.getByRole("button", { name: "提交回答" }));
+
+    // 先确认进入乐观中间态（思考气泡存在）。
+    await waitFor(() => {
+      expect(within(transcript).getByText(/正在思考/)).toBeInTheDocument();
+    });
+
+    // 服务端权威响应到达。
+    releaseServer();
+
+    // 整体替换：思考气泡消失，真实追问出现；用户回答保留且只出现一次（不与乐观消息重复）。
+    await waitFor(() => {
+      expect(within(transcript).queryByText(/正在思考/)).not.toBeInTheDocument();
+    });
+    expect(within(transcript).getByText("你提到 SQLite Repository，能说说它解决了什么问题吗？")).toBeInTheDocument();
+    expect(within(transcript).getAllByText("我负责简历分析与 Provider 接入")).toHaveLength(1);
+  });
+
+  it("提交失败时回滚乐观消息、恢复回答草稿并显示错误", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "解析简历" }));
+    await screen.findByRole("heading", { name: "简历解析与配置" });
+    await user.click(screen.getByRole("button", { name: "确认配置并开始面试" }));
+    await screen.findByRole("heading", { name: "开始面试" });
+
+    // 服务端返回失败，模拟网络或校验错误。
+    answersHandlerOverride = () => Response.json({ detail: "服务端校验失败" }, { status: 500 });
+
+    const transcript = screen.getByLabelText("面试对话记录");
+    const answerInput = screen.getByLabelText("文字回答");
+
+    await user.type(answerInput, "我负责简历分析与 Provider 接入");
+    await user.click(screen.getByRole("button", { name: "提交回答" }));
+
+    // 乐观消息与思考气泡回滚：对话记录回到初始状态（只剩面试官开场问题）。
+    await waitFor(() => {
+      expect(within(transcript).queryByText(/正在思考/)).not.toBeInTheDocument();
+    });
+    expect(within(transcript).queryByText("我负责简历分析与 Provider 接入")).not.toBeInTheDocument();
+    // 回答草稿恢复、错误提示可见，方便用户改后重发。
+    expect(answerInput).toHaveValue("我负责简历分析与 Provider 接入");
+    expect(screen.getByText("服务端校验失败")).toBeInTheDocument();
   });
 });
