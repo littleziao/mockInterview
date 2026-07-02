@@ -11,7 +11,7 @@ from apps.api.app.interview_review import (
     read_completed_interview_by_session,
 )
 from apps.api.app.interview_rounds import ROUND_TEMPLATES
-from apps.api.app.interview_session import InterviewSession, save_session
+from apps.api.app.interview_session import InterviewerAction, InterviewSession, save_session
 from apps.api.app.main import app
 from apps.api.app.resume_analysis import validate_resume_analysis
 
@@ -221,6 +221,38 @@ def test_multi_round_first_session_is_peer_technical(monkeypatch, tmp_path: Path
     assert session["roundKind"] == "peer_technical"
     assert session["roundTitle"] == "同事技术面"
     assert "基础技术" in session["roundFocus"]
+
+
+def test_answer_flow_preserves_round_kind_for_ai_decision(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock.sqlite3"))
+    observed_round_kinds: list[str] = []
+
+    def fake_next_action(*args, **kwargs):
+        session = kwargs["session"]
+        observed_round_kinds.append(session.round_kind)
+        if kwargs["starting"]:
+            return InterviewerAction(kind="main_question", message="请介绍你的核心项目。")
+        return InterviewerAction(kind="follow_up", message="请补充这个方案的边界条件。")
+
+    monkeypatch.setattr(
+        "apps.api.app.main.generate_next_interviewer_action_with_provider",
+        fake_next_action,
+    )
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        interview_id = _create_interview(client)
+        started = _start_session(client, interview_id)
+        response = client.post(
+            f"/interview-sessions/{started['id']}/answers",
+            json={"answer": "我负责核心链路设计。"},
+        )
+        advanced = response.json()
+
+    assert response.status_code == 200, response.text
+    assert advanced["roundKind"] == "peer_technical"
+    assert observed_round_kinds == ["peer_technical", "peer_technical"]
 
 
 def test_start_next_round_blocked_when_previous_in_progress(monkeypatch, tmp_path: Path) -> None:

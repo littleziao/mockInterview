@@ -464,6 +464,7 @@ def _ended_session_from(session: InterviewSession) -> InterviewSession:
         transcript=list(session.transcript),
         main_question_count=session.main_question_count,
         current_main_question_follow_ups=session.current_main_question_follow_ups,
+        round_kind=session.round_kind,
     )
 
 
@@ -476,6 +477,7 @@ def _awaiting_review_session_from(session: InterviewSession) -> InterviewSession
         transcript=list(session.transcript),
         main_question_count=session.main_question_count,
         current_main_question_follow_ups=session.current_main_question_follow_ups,
+        round_kind=session.round_kind,
     )
 
 
@@ -624,6 +626,7 @@ def post_interview_session_answer(
         transcript=[*session.transcript, candidate_message],
         main_question_count=session.main_question_count,
         current_main_question_follow_ups=session.current_main_question_follow_ups,
+        round_kind=session.round_kind,
     )
     # 每次回答后立即保存，保证刷新或重新打开后可继续。
     update_session(session_with_answer)
@@ -644,6 +647,7 @@ def post_interview_session_answer(
             transcript=[*session_with_answer.transcript, message],
             main_question_count=main_question_count,
             current_main_question_follow_ups=follow_ups,
+            round_kind=session_with_answer.round_kind,
         )
         awaiting_review_session = _awaiting_review_session_from(ending_session)
         update_session(awaiting_review_session)
@@ -677,6 +681,7 @@ def post_interview_session_answer(
             transcript=[*session_with_answer.transcript, message],
             main_question_count=main_question_count,
             current_main_question_follow_ups=follow_ups,
+            round_kind=session_with_answer.round_kind,
         )
         awaiting_review_session = _awaiting_review_session_from(ending_session)
         update_session(awaiting_review_session)
@@ -690,6 +695,7 @@ def post_interview_session_answer(
         transcript=[*session_with_answer.transcript, message],
         main_question_count=main_question_count,
         current_main_question_follow_ups=follow_ups,
+        round_kind=session_with_answer.round_kind,
     )
     update_session(advanced_session)
     return _to_session_payload(advanced_session)
@@ -724,6 +730,7 @@ def post_interview_session_abandon(session_id: int) -> InterviewSessionPayload:
         transcript=list(session.transcript),
         main_question_count=session.main_question_count,
         current_main_question_follow_ups=session.current_main_question_follow_ups,
+        round_kind=session.round_kind,
     )
     update_session(abandoned_session)
     return _to_session_payload(abandoned_session)
