@@ -184,6 +184,13 @@ type HistoryRecord = {
   transcript: TranscriptMessage[];
 };
 
+type ReviewQuestionSegment = {
+  title: string;
+  messages: TranscriptMessage[];
+  questionReview?: string;
+  sampleAnswer?: string;
+};
+
 type TrendPoint = {
   historyRecordId: number;
   completedAt: string;
@@ -1354,6 +1361,81 @@ function markdownList(items: string[]) {
   return items.length ? items.map((item) => `- ${item}`).join("\n") : "- 暂无";
 }
 
+function buildReviewQuestionSegments(transcript: TranscriptMessage[], review: InterviewReview) {
+  const segments: ReviewQuestionSegment[] = [];
+  let currentSegment: ReviewQuestionSegment | null = null;
+
+  transcript.forEach((message) => {
+    if (message.kind === "end_interview") {
+      return;
+    }
+
+    if (message.role === "interviewer" && message.kind === "main_question") {
+      currentSegment = {
+        title: `第 ${segments.length + 1} 个主问题`,
+        messages: [message],
+        questionReview: review.questionReviews[segments.length],
+        sampleAnswer: review.sampleAnswers[segments.length]
+      };
+      segments.push(currentSegment);
+      return;
+    }
+
+    if (!currentSegment) {
+      currentSegment = {
+        title: `第 ${segments.length + 1} 个主问题`,
+        messages: [],
+        questionReview: review.questionReviews[segments.length],
+        sampleAnswer: review.sampleAnswers[segments.length]
+      };
+      segments.push(currentSegment);
+    }
+
+    currentSegment.messages.push(message);
+  });
+
+  return {
+    segments,
+    supplementalQuestionReviews: review.questionReviews.slice(segments.length),
+    supplementalSampleAnswers: review.sampleAnswers.slice(segments.length)
+  };
+}
+
+function markdownReviewConversation(transcript: TranscriptMessage[], review: InterviewReview) {
+  const { segments, supplementalQuestionReviews, supplementalSampleAnswers } = buildReviewQuestionSegments(
+    transcript,
+    review
+  );
+
+  const segmentMarkdown = segments.map((segment) => {
+    const messages = segment.messages
+      .map((message) => {
+        const speaker = message.role === "interviewer" ? `面试官（${transcriptKindLabel(message.kind)}）` : "我的回答";
+        return `- **${speaker}**：${message.content}`;
+      })
+      .join("\n");
+
+    return [
+      `### ${segment.title}`,
+      messages || "- 暂无对话记录",
+      segment.questionReview ? `\n**逐题点评**：${segment.questionReview}` : "",
+      segment.sampleAnswer ? `\n**参考答案**：${segment.sampleAnswer}` : ""
+    ]
+      .filter(Boolean)
+      .join("\n");
+  });
+
+  if (supplementalQuestionReviews.length) {
+    segmentMarkdown.push(["### 补充逐题点评", markdownList(supplementalQuestionReviews)].join("\n"));
+  }
+
+  if (supplementalSampleAnswers.length) {
+    segmentMarkdown.push(["### 补充参考答案", markdownList(supplementalSampleAnswers)].join("\n"));
+  }
+
+  return segmentMarkdown.length ? segmentMarkdown.join("\n\n") : "- 暂无对话记录";
+}
+
 function buildReviewMarkdown({
   modeLabel,
   review,
@@ -1367,13 +1449,6 @@ function buildReviewMarkdown({
   styleLabel: string;
   targetRole: string;
 }) {
-  const transcript = session.transcript
-    .map((message) => {
-      const speaker = message.role === "interviewer" ? "面试官" : "我的回答";
-      return `- **${speaker}**：${message.content}`;
-    })
-    .join("\n");
-
   return [
     "# 模拟面试复盘",
     "",
@@ -1390,14 +1465,8 @@ function buildReviewMarkdown({
     "## 主要问题",
     markdownList(review.mainIssues),
     "",
-    "## 逐题点评",
-    markdownList(review.questionReviews),
-    "",
     "## 可改进表达示例",
     markdownList(review.improvedExpressionExamples),
-    "",
-    "## 参考答案",
-    markdownList(review.sampleAnswers),
     "",
     "## 知识点参考",
     markdownList(review.knowledgeReferences),
@@ -1411,8 +1480,8 @@ function buildReviewMarkdown({
     "## 六维能力评分",
     review.abilityScores.map((score) => `- ${score.dimension}：${score.score}/5，${score.rationale}`).join("\n"),
     "",
-    "## 面试对话",
-    transcript || "- 暂无对话记录",
+    "## 逐题对话复盘",
+    markdownReviewConversation(session.transcript, review),
     ""
   ].join("\n");
 }
@@ -1626,16 +1695,14 @@ function HistoryPage() {
                 </section>
                 <AbilityRadar scores={selectedRecord.review.abilityScores} />
               </div>
-              <div className="reviewGrid">
+              <ReviewConversationSection review={selectedRecord.review} transcript={selectedRecord.transcript} />
+              <div className="reviewGrid" aria-label="跨题总结复盘">
                 <ReviewSection items={selectedRecord.review.highlights} title="亮点" />
                 <ReviewSection items={selectedRecord.review.mainIssues} title="主要问题" />
+                <ReviewSection items={selectedRecord.review.improvedExpressionExamples} title="可改进表达示例" />
+                <ReviewSection items={selectedRecord.review.knowledgeReferences} title="知识点参考" />
+                <ReviewSection items={selectedRecord.review.learningFramework} title="学习框架" />
                 <ReviewSection items={selectedRecord.review.nextPracticeSuggestions} title="下一次练习建议" />
-                <ReviewSection
-                  items={selectedRecord.transcript.map((message) =>
-                    `${message.role === "interviewer" ? "面试官" : "我的回答"}：${message.content}`
-                  )}
-                  title="面试对话"
-                />
               </div>
             </section>
           ) : null}
@@ -1701,6 +1768,71 @@ function ReviewSection({ title, items }: { title: string; items: string[] }) {
           <li key={`${title}-${index}`}>{item}</li>
         ))}
       </ul>
+    </section>
+  );
+}
+
+function ReviewConversationSection({
+  review,
+  transcript
+}: {
+  review: InterviewReview;
+  transcript: TranscriptMessage[];
+}) {
+  const { segments, supplementalQuestionReviews, supplementalSampleAnswers } = buildReviewQuestionSegments(
+    transcript,
+    review
+  );
+
+  return (
+    <section className="reviewConversationSection" aria-label="逐题对话复盘">
+      <div className="reviewConversationHeader">
+        <div>
+          <h3>逐题对话复盘</h3>
+          <p>面试对话按主问题分段，逐题点评和参考答案只在对应对话段展示。</p>
+        </div>
+      </div>
+      <div className="reviewQuestionList">
+        {segments.map((segment) => (
+          <article className="reviewQuestionSegment" key={segment.title}>
+            <div className="reviewQuestionTitle">
+              <h4>{segment.title}</h4>
+            </div>
+            <ol className="reviewDialogue" aria-label={`${segment.title} 对话`}>
+              {segment.messages.map((message, index) => {
+                const isInterviewer = message.role === "interviewer";
+                return (
+                  <li className={isInterviewer ? "reviewDialogueItem interviewer" : "reviewDialogueItem candidate"} key={`${segment.title}-${index}`}>
+                    <span className="reviewDialogueMeta">
+                      {isInterviewer ? "面试官" : "我的回答"}
+                      {isInterviewer ? ` · ${transcriptKindLabel(message.kind)}` : ""}
+                    </span>
+                    <p>{message.content}</p>
+                  </li>
+                );
+              })}
+            </ol>
+            {segment.questionReview ? (
+              <div className="reviewInlineBlock">
+                <strong>逐题点评</strong>
+                <p>{segment.questionReview}</p>
+              </div>
+            ) : null}
+            {segment.sampleAnswer ? (
+              <div className="reviewInlineBlock">
+                <strong>参考答案</strong>
+                <p>{segment.sampleAnswer}</p>
+              </div>
+            ) : null}
+          </article>
+        ))}
+      </div>
+      {supplementalQuestionReviews.length ? (
+        <ReviewSection items={supplementalQuestionReviews} title="补充逐题点评" />
+      ) : null}
+      {supplementalSampleAnswers.length ? (
+        <ReviewSection items={supplementalSampleAnswers} title="补充参考答案" />
+      ) : null}
     </section>
   );
 }
@@ -1817,12 +1949,12 @@ function ReviewPage({
         <AbilityRadar scores={review.abilityScores} />
       </div>
 
-      <div className="reviewGrid">
+      <ReviewConversationSection review={review} transcript={session.transcript} />
+
+      <div className="reviewGrid" aria-label="跨题总结复盘">
         <ReviewSection items={review.highlights} title="亮点" />
         <ReviewSection items={review.mainIssues} title="主要问题" />
-        <ReviewSection items={review.questionReviews} title="逐题点评" />
         <ReviewSection items={review.improvedExpressionExamples} title="可改进表达示例" />
-        <ReviewSection items={review.sampleAnswers} title="参考答案" />
         <ReviewSection items={review.knowledgeReferences} title="知识点参考" />
         <ReviewSection items={review.learningFramework} title="学习框架" />
         <ReviewSection items={review.nextPracticeSuggestions} title="下一次练习建议" />

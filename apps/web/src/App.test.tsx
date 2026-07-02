@@ -48,15 +48,17 @@ const historyPayloadMock = {
       completedAt: "2026-07-02 10:30:00",
       transcript: [
         { role: "interviewer", content: "请介绍 API 设计。", kind: "main_question", mainQuestionIndex: 0 },
-        { role: "candidate", content: "我负责 FastAPI 和 SQLite。", kind: "", mainQuestionIndex: 0 }
+        { role: "candidate", content: "我负责 FastAPI 和 SQLite。", kind: "", mainQuestionIndex: 0 },
+        { role: "interviewer", content: "异常路径怎么处理？", kind: "follow_up", mainQuestionIndex: 0 },
+        { role: "candidate", content: "我会区分校验错误和 Provider 错误。", kind: "", mainQuestionIndex: 0 }
       ],
       review: {
         overallEvaluation: "后端复盘：接口边界清楚，排障细节还可以加强。",
         highlights: ["能讲清 API 职责"],
         mainIssues: ["异常路径说明不足"],
-        questionReviews: ["第 1 题：API 边界清楚。"],
+        questionReviews: ["第 1 题：API 边界清楚。", "补充点评：后续可以单独练习错误观测。"],
         improvedExpressionExamples: ["补充错误处理与观测方式。"],
-        sampleAnswers: ["示范性回答：先讲接口契约，再讲异常处理。"],
+        sampleAnswers: ["示范性回答：先讲接口契约，再讲异常处理。", "补充参考：也可以按状态码分类说明。"],
         knowledgeReferences: ["FastAPI 依赖注入"],
         learningFramework: ["整理 Repository 查询"],
         nextPracticeSuggestions: ["下一次重点练习排障表达。"],
@@ -495,6 +497,19 @@ describe("App", () => {
     expect(screen.getByLabelText("六维能力趋势")).toHaveTextContent("专业知识准确性");
     expect(screen.getByLabelText("六维能力趋势")).toHaveTextContent("平均 4.0 / 5");
     expect(screen.getAllByText("后端复盘：接口边界清楚，排障细节还可以加强。").length).toBeGreaterThan(0);
+    const backendConversationReview = screen.getByLabelText("逐题对话复盘");
+    expect(backendConversationReview).toHaveTextContent("第 1 个主问题");
+    expect(backendConversationReview).toHaveTextContent("请介绍 API 设计。");
+    expect(backendConversationReview).toHaveTextContent("异常路径怎么处理？");
+    expect(backendConversationReview).toHaveTextContent("我会区分校验错误和 Provider 错误。");
+    expect(backendConversationReview).toHaveTextContent("第 1 题：API 边界清楚。");
+    expect(backendConversationReview).toHaveTextContent("示范性回答：先讲接口契约，再讲异常处理。");
+    expect(backendConversationReview).toHaveTextContent("补充点评：后续可以单独练习错误观测。");
+    expect(backendConversationReview).toHaveTextContent("补充参考：也可以按状态码分类说明。");
+    const backendSummaryReview = screen.getByLabelText("跨题总结复盘");
+    expect(backendSummaryReview).toHaveTextContent("能讲清 API 职责");
+    expect(backendSummaryReview).not.toHaveTextContent("第 1 题：API 边界清楚。");
+    expect(backendSummaryReview).not.toHaveTextContent("示范性回答：先讲接口契约，再讲异常处理。");
 
     await user.click(screen.getByRole("button", { name: "前端工程师" }));
 
@@ -507,7 +522,8 @@ describe("App", () => {
       expect(screen.getAllByText("前端复盘：能说明页面结构，但趋势数据解释还可以更完整。").length).toBeGreaterThan(0);
     });
     expect(screen.getByLabelText("已完成面试记录列表")).not.toHaveTextContent("后端工程师");
-    expect(screen.getByText("我的回答：我负责历史与趋势页。")).toBeInTheDocument();
+    expect(screen.getByLabelText("逐题对话复盘")).toHaveTextContent("请介绍前端工作台。");
+    expect(screen.getByLabelText("逐题对话复盘")).toHaveTextContent("我负责历史与趋势页。");
   });
 
   it("覆盖新建面试流程三步主路径、可编辑简历分析和只读面试配置摘要", async () => {
@@ -576,6 +592,7 @@ describe("App", () => {
     expect(screen.getByLabelText("面试配置摘要")).toHaveTextContent("多轮面试");
     expect(screen.getByLabelText("面试配置摘要")).toHaveTextContent("压力面");
     expect(screen.getByText("先做个自我介绍吧。")).toBeInTheDocument();
+    expect(screen.queryByText("示范性回答：这是一种可参考表达，不是唯一标准答案。")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("目标岗位")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "手动结束" }));
@@ -587,7 +604,12 @@ describe("App", () => {
     expect(screen.getByText("整体能说明项目背景，但技术取舍和结果指标还可以加强。")).toBeInTheDocument();
     expect(screen.getByLabelText("六维能力评分雷达图")).toHaveTextContent("专业知识准确性");
     expect(screen.getByLabelText("六维能力评分雷达图")).toHaveTextContent("4/5");
-    expect(screen.getByText("示范性回答：这是一种可参考表达，不是唯一标准答案。")).toBeInTheDocument();
+    const reviewConversation = screen.getByLabelText("逐题对话复盘");
+    expect(reviewConversation).toHaveTextContent("先做个自我介绍吧。");
+    expect(reviewConversation).toHaveTextContent("我负责简历分析和 AI Provider 接入。");
+    expect(reviewConversation).toHaveTextContent("第 1 个主问题：回答覆盖背景，但缺少量化结果。");
+    expect(reviewConversation).toHaveTextContent("示范性回答：这是一种可参考表达，不是唯一标准答案。");
+    expect(screen.getByLabelText("跨题总结复盘")).not.toHaveTextContent("示范性回答：这是一种可参考表达，不是唯一标准答案。");
 
     await user.click(screen.getByRole("button", { name: "导出 Markdown" }));
 

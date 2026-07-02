@@ -924,6 +924,98 @@ fieldset {
   gap: 14px;
 }
 
+.reviewConversationSection {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid #cfd8d4;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.reviewConversationHeader h3 {
+  font-size: 15px;
+}
+
+.reviewConversationHeader p {
+  margin-top: 6px;
+  color: #62706a;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.reviewQuestionList {
+  display: grid;
+  gap: 14px;
+}
+
+.reviewQuestionSegment {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #d8dfda;
+  border-radius: 8px;
+  background: #fbfcfa;
+}
+
+.reviewQuestionTitle h4 {
+  margin: 0;
+  color: #174f47;
+  font-size: 14px;
+}
+
+.reviewDialogue {
+  display: grid;
+  gap: 10px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.reviewDialogueItem {
+  display: grid;
+  gap: 5px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f3f6f2;
+}
+
+.reviewDialogueItem.interviewer {
+  border-left: 3px solid #1f6f63;
+}
+
+.reviewDialogueItem.candidate {
+  border-left: 3px solid #d08f3e;
+  background: #fffaf2;
+}
+
+.reviewDialogueMeta {
+  color: #62706a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.reviewDialogueItem p,
+.reviewInlineBlock p {
+  color: #45524d;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.reviewInlineBlock {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #eef6f2;
+}
+
+.reviewInlineBlock strong {
+  color: #174f47;
+  font-size: 13px;
+}
+
 .reviewBlock {
   padding: 16px;
 }
