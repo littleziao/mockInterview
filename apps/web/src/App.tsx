@@ -2,11 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertCircle,
+  BarChart3,
   BookOpenText,
   CheckCircle2,
   CircleStop,
   ClipboardList,
   Download,
+  Eye,
   FileUp,
   History,
   Home,
@@ -19,6 +21,7 @@ import {
   Send,
   Settings,
   Sparkles,
+  TrendingUp,
   Trash2,
   Wifi
 } from "lucide-react";
@@ -165,6 +168,38 @@ type InterviewReview = {
   learningFramework: string[];
   nextPracticeSuggestions: string[];
   abilityScores: AbilityScore[];
+};
+
+type HistoryRecord = {
+  id: number;
+  interviewId: number;
+  sessionId: number;
+  targetRole: string;
+  interviewMode: InterviewMode;
+  style: InterviewSessionStyle;
+  roundKind: string;
+  roundTitle: string;
+  completedAt: string;
+  review: InterviewReview;
+  transcript: TranscriptMessage[];
+};
+
+type TrendPoint = {
+  historyRecordId: number;
+  completedAt: string;
+  score: number;
+};
+
+type TrendDimension = {
+  dimension: string;
+  averageScore: number;
+  points: TrendPoint[];
+};
+
+type HistoryPayload = {
+  records: HistoryRecord[];
+  targetRoles: string[];
+  trends: TrendDimension[];
 };
 
 type RouteId = "home" | "new-upload" | "new-analysis" | "new-interview" | "review" | "history" | "settings";
@@ -1392,6 +1427,224 @@ function downloadReviewMarkdown(markdown: string) {
   URL.revokeObjectURL(url);
 }
 
+function formatCompletedAt(value: string) {
+  if (!value) {
+    return "时间未知";
+  }
+  const normalized = value.includes("T") ? value : value.replace(" ", "T");
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function HistoryPage() {
+  const [history, setHistory] = useState<HistoryPayload>({
+    records: [],
+    targetRoles: [],
+    trends: []
+  });
+  const [selectedTargetRole, setSelectedTargetRole] = useState("");
+  const [selectedRecordId, setSelectedRecordId] = useState<number | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadHistory() {
+      setIsLoading(true);
+      setError("");
+      try {
+        const query = selectedTargetRole ? `?target_role=${encodeURIComponent(selectedTargetRole)}` : "";
+        const response = await fetch(`${apiBaseUrl}/history${query}`);
+        if (!response.ok) {
+          throw new Error("读取历史与趋势失败");
+        }
+        const payload = (await response.json()) as HistoryPayload;
+        if (mounted) {
+          setHistory(payload);
+          setSelectedRecordId((current) => {
+            if (payload.records.some((record) => record.id === current)) {
+              return current;
+            }
+            return payload.records[0]?.id ?? null;
+          });
+        }
+      } catch (loadError) {
+        if (mounted) {
+          setError(loadError instanceof Error ? loadError.message : "读取历史与趋势失败");
+        }
+      } finally {
+        if (mounted) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    void loadHistory();
+    return () => {
+      mounted = false;
+    };
+  }, [selectedTargetRole]);
+
+  const selectedRecord = history.records.find((record) => record.id === selectedRecordId) ?? history.records[0];
+  const filteredLabel = selectedTargetRole || "全部岗位";
+
+  return (
+    <section className="panel historyPage" aria-labelledby="history-title">
+      <div className="sectionHeader">
+        <div>
+          <h2 id="history-title">历史与趋势</h2>
+          <p>只统计已完成并生成复盘的本地面试记录。</p>
+        </div>
+        <div className="historyFilter" aria-label="目标岗位筛选">
+          <button
+            className={selectedTargetRole ? "secondaryButton" : "primaryButton"}
+            onClick={() => setSelectedTargetRole("")}
+            type="button"
+          >
+            <BarChart3 size={16} aria-hidden="true" />
+            全部岗位
+          </button>
+          {history.targetRoles.map((role) => (
+            <button
+              className={selectedTargetRole === role ? "primaryButton" : "secondaryButton"}
+              key={role}
+              onClick={() => setSelectedTargetRole(role)}
+              type="button"
+            >
+              {role}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error ? <div className="workflowMessage failure">{error}</div> : null}
+      {isLoading ? <div className="workflowMessage">正在读取历史记录</div> : null}
+
+      {!isLoading && history.records.length === 0 ? (
+        <div className="emptyState historyEmpty">暂无完成面试，生成复盘后会出现在这里。</div>
+      ) : null}
+
+      {history.records.length > 0 ? (
+        <>
+          <div className="historyStats" aria-label="历史统计">
+            <div>
+              <span>当前范围</span>
+              <strong>{filteredLabel}</strong>
+            </div>
+            <div>
+              <span>完成记录</span>
+              <strong>{history.records.length}</strong>
+            </div>
+            <div>
+              <span>最高均分维度</span>
+              <strong>
+                {history.trends
+                  .slice()
+                  .sort((a, b) => b.averageScore - a.averageScore)[0]?.dimension ?? "暂无"}
+              </strong>
+            </div>
+          </div>
+
+          <div className="historyLayout">
+            <section className="historyList" aria-labelledby="history-list-title">
+              <h3 id="history-list-title">完成记录</h3>
+              <ul aria-label="已完成面试记录列表">
+                {history.records.map((record) => {
+                  const modeLabel =
+                    interviewModeOptions.find((option) => option.value === record.interviewMode)?.label ?? "单轮面试";
+                  const styleLabel =
+                    interviewStyleOptions.find((option) => option.value === record.style)?.label ?? "学习梳理面";
+                  return (
+                    <li className={record.id === selectedRecord?.id ? "historyItem active" : "historyItem"} key={record.id}>
+                      <div>
+                        <strong>{record.targetRole || "由简历推断"}</strong>
+                        <span>
+                          {formatCompletedAt(record.completedAt)} · {modeLabel} · {styleLabel}
+                          {record.roundTitle ? ` · ${record.roundTitle}` : ""}
+                        </span>
+                      </div>
+                      <button className="secondaryButton" onClick={() => setSelectedRecordId(record.id)} type="button">
+                        <Eye size={16} aria-hidden="true" />
+                        查看复盘
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+
+            <section className="trendPanel" aria-labelledby="trend-title">
+              <div className="trendHeading">
+                <TrendingUp size={18} aria-hidden="true" />
+                <h3 id="trend-title">六维长期趋势</h3>
+              </div>
+              <div className="trendRows" aria-label="六维能力趋势">
+                {history.trends.map((trend) => (
+                  <div className="trendRow" key={trend.dimension}>
+                    <div>
+                      <strong>{trend.dimension}</strong>
+                      <span>平均 {trend.averageScore.toFixed(1)} / 5</span>
+                    </div>
+                    <div className="trendDots" aria-label={`${trend.dimension} 趋势分数`}>
+                      {trend.points.map((point) => (
+                        <span
+                          className="trendDot"
+                          key={`${trend.dimension}-${point.historyRecordId}`}
+                          title={`${formatCompletedAt(point.completedAt)}：${point.score}/5`}
+                        >
+                          {point.score}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+
+          {selectedRecord ? (
+            <section className="historyReview" aria-labelledby="history-review-title">
+              <div className="sectionHeader compact">
+                <div>
+                  <h3 id="history-review-title">历史复盘详情</h3>
+                  <p>{selectedRecord.review.overallEvaluation}</p>
+                </div>
+              </div>
+              <div className="reviewOverview">
+                <section className="reviewSummary" aria-labelledby="history-review-summary">
+                  <h3 id="history-review-summary">总体评价</h3>
+                  <p>{selectedRecord.review.overallEvaluation}</p>
+                </section>
+                <AbilityRadar scores={selectedRecord.review.abilityScores} />
+              </div>
+              <div className="reviewGrid">
+                <ReviewSection items={selectedRecord.review.highlights} title="亮点" />
+                <ReviewSection items={selectedRecord.review.mainIssues} title="主要问题" />
+                <ReviewSection items={selectedRecord.review.nextPracticeSuggestions} title="下一次练习建议" />
+                <ReviewSection
+                  items={selectedRecord.transcript.map((message) =>
+                    `${message.role === "interviewer" ? "面试官" : "我的回答"}：${message.content}`
+                  )}
+                  title="面试对话"
+                />
+              </div>
+            </section>
+          ) : null}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 function AbilityRadar({ scores }: { scores: AbilityScore[] }) {
   const center = 120;
   const maxRadius = 88;
@@ -1952,6 +2205,8 @@ export function App() {
 
         {route === "settings" ? (
           <SettingsPage />
+        ) : route === "history" ? (
+          <HistoryPage />
         ) : (
           <>
             {route === "home" ? (

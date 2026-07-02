@@ -53,9 +53,13 @@ from .interview_rounds import (
     plan_rounds,
 )
 from .interview_review import (
+    ABILITY_DIMENSIONS,
+    CompletedInterviewHistoryRecord,
     InterviewReview,
     InterviewReviewValidationError,
     initialize_interview_review_schema,
+    list_completed_interview_history,
+    list_completed_target_roles,
     read_completed_interview_by_session,
     save_completed_interview,
 )
@@ -361,6 +365,38 @@ class InterviewReviewPayload(BaseModel):
     ability_scores: list[AbilityScorePayload] = Field(serialization_alias="abilityScores")
 
 
+class HistoryRecordPayload(BaseModel):
+    id: int
+    interview_id: int = Field(serialization_alias="interviewId")
+    session_id: int = Field(serialization_alias="sessionId")
+    target_role: str = Field(serialization_alias="targetRole")
+    interview_mode: str = Field(serialization_alias="interviewMode")
+    style: str
+    round_kind: str = Field(serialization_alias="roundKind")
+    round_title: str = Field(serialization_alias="roundTitle")
+    completed_at: str = Field(serialization_alias="completedAt")
+    review: InterviewReviewPayload
+    transcript: list[TranscriptMessagePayload]
+
+
+class TrendPointPayload(BaseModel):
+    history_record_id: int = Field(serialization_alias="historyRecordId")
+    completed_at: str = Field(serialization_alias="completedAt")
+    score: int
+
+
+class TrendDimensionPayload(BaseModel):
+    dimension: str
+    average_score: float = Field(serialization_alias="averageScore")
+    points: list[TrendPointPayload]
+
+
+class HistoryPayload(BaseModel):
+    records: list[HistoryRecordPayload]
+    target_roles: list[str] = Field(serialization_alias="targetRoles")
+    trends: list[TrendDimensionPayload]
+
+
 def _to_transcript_payload(message: TranscriptMessage) -> TranscriptMessagePayload:
     return TranscriptMessagePayload(
         role=message.role,
@@ -420,6 +456,59 @@ def _to_review_payload(review: InterviewReview) -> InterviewReviewPayload:
             for score in review.ability_scores
         ],
     )
+
+
+def _to_history_record_payload(record: CompletedInterviewHistoryRecord) -> HistoryRecordPayload:
+    round_fields = _round_fields(record.round_kind)
+    return HistoryRecordPayload(
+        id=record.id,
+        interview_id=record.interview_id,
+        session_id=record.session_id,
+        target_role=record.target_role,
+        interview_mode=record.interview_mode,
+        style=record.style,
+        round_kind=round_fields["round_kind"],
+        round_title=round_fields["round_title"],
+        completed_at=record.completed_at,
+        review=_to_review_payload(record.review),
+        transcript=[_to_transcript_payload(message) for message in record.transcript],
+    )
+
+
+def _build_trends(records: list[CompletedInterviewHistoryRecord]) -> list[TrendDimensionPayload]:
+    chronological_records = list(reversed(records))
+    trends: list[TrendDimensionPayload] = []
+    for dimension in ABILITY_DIMENSIONS:
+        points: list[TrendPointPayload] = []
+        for record in chronological_records:
+            score = next(
+                (
+                    ability_score.score
+                    for ability_score in record.review.ability_scores
+                    if ability_score.dimension == dimension
+                ),
+                None,
+            )
+            if score is None:
+                continue
+            points.append(
+                TrendPointPayload(
+                    history_record_id=record.id,
+                    completed_at=record.completed_at,
+                    score=score,
+                )
+            )
+
+        average = sum(point.score for point in points) / len(points) if points else 0
+        trends.append(
+            TrendDimensionPayload(
+                dimension=dimension,
+                average_score=round(average, 2),
+                points=points,
+            )
+        )
+
+    return trends
 
 
 def _require_active_provider():
@@ -586,6 +675,16 @@ def get_in_progress_sessions() -> list[ResumeableSessionPayload]:
             )
         )
     return payloads
+
+
+@app.get("/history", response_model=HistoryPayload)
+def get_history(target_role: str = "") -> HistoryPayload:
+    records = list_completed_interview_history(target_role=target_role)
+    return HistoryPayload(
+        records=[_to_history_record_payload(record) for record in records],
+        target_roles=list_completed_target_roles(),
+        trends=_build_trends(records),
+    )
 
 
 @app.get("/interview-sessions/{session_id}", response_model=InterviewSessionPayload)

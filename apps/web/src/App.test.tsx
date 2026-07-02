@@ -33,6 +33,95 @@ let roundsProgressMock: MockRoundProgress[] = [];
 let sessionRoundKindMock = "peer_technical";
 let sessionRoundTitleMock = "同事技术面";
 
+const historyPayloadMock = {
+  targetRoles: ["前端工程师", "后端工程师"],
+  records: [
+    {
+      id: 2,
+      interviewId: 8,
+      sessionId: 32,
+      targetRole: "后端工程师",
+      interviewMode: "single_round",
+      style: "pressure",
+      roundKind: "single_round",
+      roundTitle: "",
+      completedAt: "2026-07-02 10:30:00",
+      transcript: [
+        { role: "interviewer", content: "请介绍 API 设计。", kind: "main_question", mainQuestionIndex: 0 },
+        { role: "candidate", content: "我负责 FastAPI 和 SQLite。", kind: "", mainQuestionIndex: 0 }
+      ],
+      review: {
+        overallEvaluation: "后端复盘：接口边界清楚，排障细节还可以加强。",
+        highlights: ["能讲清 API 职责"],
+        mainIssues: ["异常路径说明不足"],
+        questionReviews: ["第 1 题：API 边界清楚。"],
+        improvedExpressionExamples: ["补充错误处理与观测方式。"],
+        sampleAnswers: ["示范性回答：先讲接口契约，再讲异常处理。"],
+        knowledgeReferences: ["FastAPI 依赖注入"],
+        learningFramework: ["整理 Repository 查询"],
+        nextPracticeSuggestions: ["下一次重点练习排障表达。"],
+        abilityScores: [
+          { dimension: "专业知识准确性", score: 5, rationale: "概念准确。" },
+          { dimension: "项目经验表达", score: 4, rationale: "项目表达清楚。" },
+          { dimension: "问题分析能力", score: 4, rationale: "拆解合理。" },
+          { dimension: "技术深度", score: 4, rationale: "有一定深度。" },
+          { dimension: "沟通结构化", score: 3, rationale: "结构可加强。" },
+          { dimension: "岗位匹配度", score: 5, rationale: "匹配岗位。" }
+        ]
+      }
+    },
+    {
+      id: 1,
+      interviewId: 7,
+      sessionId: 31,
+      targetRole: "前端工程师",
+      interviewMode: "multi_round",
+      style: "study",
+      roundKind: "peer_technical",
+      roundTitle: "同事技术面",
+      completedAt: "2026-07-01 09:00:00",
+      transcript: [
+        { role: "interviewer", content: "请介绍前端工作台。", kind: "main_question", mainQuestionIndex: 0 },
+        { role: "candidate", content: "我负责历史与趋势页。", kind: "", mainQuestionIndex: 0 }
+      ],
+      review: {
+        overallEvaluation: "前端复盘：能说明页面结构，但趋势数据解释还可以更完整。",
+        highlights: ["能结合真实页面回答"],
+        mainIssues: ["趋势解释略少"],
+        questionReviews: ["第 1 题：页面结构说明清楚。"],
+        improvedExpressionExamples: ["先讲用户目标，再讲数据来源。"],
+        sampleAnswers: ["示范性回答：历史页只统计已完成复盘的记录。"],
+        knowledgeReferences: ["React 状态同步"],
+        learningFramework: ["整理趋势维度"],
+        nextPracticeSuggestions: ["下一次重点练习数据可视化表达。"],
+        abilityScores: [
+          { dimension: "专业知识准确性", score: 3, rationale: "概念基本准确。" },
+          { dimension: "项目经验表达", score: 4, rationale: "项目表达较清楚。" },
+          { dimension: "问题分析能力", score: 3, rationale: "拆解过程可加强。" },
+          { dimension: "技术深度", score: 3, rationale: "技术深度可加强。" },
+          { dimension: "沟通结构化", score: 4, rationale: "表达有结构。" },
+          { dimension: "岗位匹配度", score: 4, rationale: "匹配岗位。" }
+        ]
+      }
+    }
+  ],
+  trends: [
+    {
+      dimension: "专业知识准确性",
+      averageScore: 4,
+      points: [
+        { historyRecordId: 1, completedAt: "2026-07-01 09:00:00", score: 3 },
+        { historyRecordId: 2, completedAt: "2026-07-02 10:30:00", score: 5 }
+      ]
+    },
+    { dimension: "项目经验表达", averageScore: 4, points: [{ historyRecordId: 1, completedAt: "2026-07-01 09:00:00", score: 4 }] },
+    { dimension: "问题分析能力", averageScore: 3.5, points: [{ historyRecordId: 1, completedAt: "2026-07-01 09:00:00", score: 3 }] },
+    { dimension: "技术深度", averageScore: 3.5, points: [{ historyRecordId: 1, completedAt: "2026-07-01 09:00:00", score: 3 }] },
+    { dimension: "沟通结构化", averageScore: 3.5, points: [{ historyRecordId: 1, completedAt: "2026-07-01 09:00:00", score: 4 }] },
+    { dimension: "岗位匹配度", averageScore: 4.5, points: [{ historyRecordId: 1, completedAt: "2026-07-01 09:00:00", score: 4 }] }
+  ]
+};
+
 describe("App", () => {
   beforeEach(() => {
     interviewAnswerCount = 0;
@@ -57,6 +146,21 @@ describe("App", () => {
 
         if (url.endsWith("/interview-sessions/in-progress") && !init) {
           return Response.json(inProgressSessionsMock);
+        }
+
+        if (url.includes("/history") && !init) {
+          if (url.includes("target_role=%E5%89%8D%E7%AB%AF%E5%B7%A5%E7%A8%8B%E5%B8%88")) {
+            return Response.json({
+              ...historyPayloadMock,
+              records: historyPayloadMock.records.filter((record) => record.targetRole === "前端工程师"),
+              trends: historyPayloadMock.trends.map((trend) => ({
+                ...trend,
+                averageScore: trend.points[0]?.score ?? 0,
+                points: trend.points.filter((point) => point.historyRecordId === 1)
+              }))
+            });
+          }
+          return Response.json(historyPayloadMock);
         }
 
         if (url.endsWith("/settings/ai-provider") && !init) {
@@ -376,6 +480,34 @@ describe("App", () => {
     const successMessage = await screen.findByText("AI Provider 连接测试成功");
     expect(successMessage).toBeInTheDocument();
     expect(successMessage.closest(".connectionState")).toHaveClass("success");
+  });
+
+  it("展示历史记录、按目标岗位筛选并打开复盘趋势", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "历史与趋势" }));
+
+    expect(await screen.findByRole("heading", { name: "历史与趋势" })).toBeInTheDocument();
+    expect(screen.getByLabelText("历史统计")).toHaveTextContent("完成记录");
+    expect(screen.getByLabelText("历史统计")).toHaveTextContent("2");
+    expect(screen.getByLabelText("已完成面试记录列表")).toHaveTextContent("后端工程师");
+    expect(screen.getByLabelText("六维能力趋势")).toHaveTextContent("专业知识准确性");
+    expect(screen.getByLabelText("六维能力趋势")).toHaveTextContent("平均 4.0 / 5");
+    expect(screen.getAllByText("后端复盘：接口边界清楚，排障细节还可以加强。").length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("button", { name: "前端工程师" }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        "http://127.0.0.1:8000/history?target_role=%E5%89%8D%E7%AB%AF%E5%B7%A5%E7%A8%8B%E5%B8%88"
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getAllByText("前端复盘：能说明页面结构，但趋势数据解释还可以更完整。").length).toBeGreaterThan(0);
+    });
+    expect(screen.getByLabelText("已完成面试记录列表")).not.toHaveTextContent("后端工程师");
+    expect(screen.getByText("我的回答：我负责历史与趋势页。")).toBeInTheDocument();
   });
 
   it("覆盖新建面试流程三步主路径、可编辑简历分析和只读面试配置摘要", async () => {

@@ -88,6 +88,20 @@ class CompletedInterviewRecord:
     review: InterviewReview
 
 
+@dataclass(frozen=True)
+class CompletedInterviewHistoryRecord:
+    id: int
+    interview_id: int
+    session_id: int
+    target_role: str
+    interview_mode: str
+    style: str
+    round_kind: str
+    completed_at: str
+    transcript: list[TranscriptMessage]
+    review: InterviewReview
+
+
 def _unwrap_review_payload(data: object) -> object:
     if not isinstance(data, dict):
         return data
@@ -338,3 +352,73 @@ def read_completed_interview_by_session(session_id: int) -> CompletedInterviewRe
         transcript=transcript,
         review=validate_interview_review(json.loads(str(row["review_json"]))),
     )
+
+
+def _build_history_record_from_row(row: sqlite3.Row) -> CompletedInterviewHistoryRecord:
+    transcript = [
+        TranscriptMessage.model_validate(item)
+        for item in json.loads(str(row["transcript_json"]))
+    ]
+    return CompletedInterviewHistoryRecord(
+        id=int(row["id"]),
+        interview_id=int(row["interview_id"]),
+        session_id=int(row["session_id"]),
+        target_role=str(row["target_role"]),
+        interview_mode=str(row["interview_mode"]),
+        style=str(row["style"]),
+        round_kind=str(row["round_kind"]) if "round_kind" in row.keys() else "single_round",
+        completed_at=str(row["completed_at"]),
+        transcript=transcript,
+        review=validate_interview_review(json.loads(str(row["review_json"]))),
+    )
+
+
+def list_completed_interview_history(*, target_role: str = "") -> list[CompletedInterviewHistoryRecord]:
+    initialize_interview_review_schema()
+    normalized_target_role = target_role.strip()
+    parameters: tuple[str, ...] = ()
+    where_clause = ""
+    if normalized_target_role:
+        where_clause = "WHERE interviews.target_role = ?"
+        parameters = (normalized_target_role,)
+
+    with connect() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT
+                completed_interviews.id,
+                completed_interviews.interview_id,
+                completed_interviews.session_id,
+                completed_interviews.transcript_json,
+                completed_interviews.review_json,
+                completed_interviews.completed_at,
+                interviews.target_role,
+                interviews.interview_mode,
+                interview_sessions.style,
+                interview_sessions.round_kind
+            FROM completed_interviews
+            JOIN interviews ON interviews.id = completed_interviews.interview_id
+            JOIN interview_sessions ON interview_sessions.id = completed_interviews.session_id
+            {where_clause}
+            ORDER BY completed_interviews.completed_at DESC, completed_interviews.id DESC
+            """,
+            parameters,
+        ).fetchall()
+
+    return [_build_history_record_from_row(row) for row in rows]
+
+
+def list_completed_target_roles() -> list[str]:
+    initialize_interview_review_schema()
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT DISTINCT target_role
+            FROM interviews
+            JOIN completed_interviews ON completed_interviews.interview_id = interviews.id
+            WHERE target_role <> ''
+            ORDER BY target_role ASC
+            """
+        ).fetchall()
+
+    return [str(row["target_role"]) for row in rows]

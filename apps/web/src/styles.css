@@ -947,6 +947,163 @@ fieldset {
   content: "";
 }
 
+.historyPage {
+  display: grid;
+  gap: 18px;
+  padding: 22px;
+}
+
+.historyFilter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.historyStats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.historyStats > div {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border: 1px solid #d8dfda;
+  border-radius: 8px;
+  background: #fbfcfa;
+}
+
+.historyStats span,
+.historyItem span,
+.trendRow span {
+  color: #62706a;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.historyStats strong {
+  color: #174f47;
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+
+.historyLayout {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.85fr) minmax(0, 1.15fr);
+  gap: 16px;
+}
+
+.historyList,
+.trendPanel,
+.historyReview {
+  border: 1px solid #d8dfda;
+  border-radius: 8px;
+  background: #fbfcfa;
+}
+
+.historyList,
+.trendPanel {
+  padding: 16px;
+}
+
+.historyList h3,
+.trendHeading h3,
+.historyReview h3 {
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.historyList ul,
+.trendRows {
+  display: grid;
+  gap: 10px;
+  padding: 0;
+  margin: 12px 0 0;
+  list-style: none;
+}
+
+.historyItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid #e1e7e2;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.historyItem.active {
+  border-color: #1f6f63;
+  box-shadow: 0 0 0 2px rgba(31, 111, 99, 0.12);
+}
+
+.historyItem > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.historyItem strong {
+  overflow-wrap: anywhere;
+}
+
+.trendHeading {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: #174f47;
+}
+
+.trendRow {
+  display: grid;
+  grid-template-columns: minmax(0, 180px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid #e5ebe6;
+}
+
+.trendRow:first-child {
+  border-top: 0;
+}
+
+.trendRow > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.trendDots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.trendDot {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 999px;
+  background: #1f6f63;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.historyReview {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+.historyEmpty {
+  min-height: 140px;
+}
+
 @media (max-width: 1120px) {
   .appShell {
     grid-template-columns: 220px minmax(0, 1fr);
@@ -966,6 +1123,8 @@ fieldset {
   .providerSettingsLayout,
   .reviewOverview,
   .reviewGrid,
+  .historyStats,
+  .historyLayout,
   .radarChart {
     grid-template-columns: 1fr;
   }
@@ -1000,12 +1159,19 @@ fieldset {
     justify-content: flex-start;
   }
 
+  .historyFilter,
+  .trendDots {
+    justify-content: flex-start;
+  }
+
   .analysisGrid,
   .analysisGrid label:first-child,
   .analysisGrid label:nth-child(7),
   .configurationGrid,
   .readonlySummary,
-  .emptyRouteState {
+  .emptyRouteState,
+  .historyItem,
+  .trendRow {
     grid-template-columns: 1fr;
     grid-column: span 1;
   }
