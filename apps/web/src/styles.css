@@ -1192,6 +1192,48 @@ fieldset {
   overflow-wrap: anywhere;
 }
 
+/* 首页「未完成的面试」卡片：与历史记录卡片保持一致的列表项外观。 */
+.resumeList {
+  display: grid;
+  gap: 10px;
+  padding: 0;
+  margin: 12px 0 0;
+  list-style: none;
+}
+
+.resumeItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid #e1e7e2;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.resumeSummary {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.resumeSummary span {
+  color: #62706a;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.resumeSummary strong {
+  overflow-wrap: anywhere;
+}
+
+.resumeActions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .trendHeading {
   display: flex;
   gap: 8px;
