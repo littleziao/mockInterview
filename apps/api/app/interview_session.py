@@ -69,6 +69,7 @@ class InterviewSession:
     transcript: list[TranscriptMessage]
     main_question_count: int
     current_main_question_follow_ups: int
+    round_kind: str = "single_round"
 
 
 def _unwrap_action_payload(data: object) -> object:
@@ -190,9 +191,21 @@ def initialize_interview_session_schema() -> None:
             )
             """
         )
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(interview_sessions)").fetchall()
+        }
+        if "round_kind" not in columns:
+            connection.execute(
+                "ALTER TABLE interview_sessions ADD COLUMN round_kind TEXT NOT NULL DEFAULT 'single_round'"
+            )
         connection.execute(
             "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
             ("0003_interview_sessions",),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
+            ("0005_interview_round_kind",),
         )
 
 
@@ -206,7 +219,14 @@ def _build_session_from_row(row: sqlite3.Row) -> InterviewSession:
         transcript=transcript,
         main_question_count=int(row["main_question_count"]),
         current_main_question_follow_ups=int(row["current_main_question_follow_ups"]),
+        round_kind=str(row["round_kind"]) if "round_kind" in row.keys() else "single_round",
     )
+
+
+_SESSION_SELECT_COLUMNS = (
+    "id, interview_id, style, status, transcript_json, "
+    "main_question_count, current_main_question_follow_ups, round_kind"
+)
 
 
 def save_session(session: InterviewSession) -> InterviewSession:
@@ -221,9 +241,9 @@ def save_session(session: InterviewSession) -> InterviewSession:
                 """
                 INSERT INTO interview_sessions (
                     id, interview_id, style, status, transcript_json,
-                    main_question_count, current_main_question_follow_ups
+                    main_question_count, current_main_question_follow_ups, round_kind
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session.id,
@@ -233,6 +253,7 @@ def save_session(session: InterviewSession) -> InterviewSession:
                     transcript_json,
                     session.main_question_count,
                     session.current_main_question_follow_ups,
+                    session.round_kind,
                 ),
             )
         else:
@@ -240,9 +261,9 @@ def save_session(session: InterviewSession) -> InterviewSession:
                 """
                 INSERT INTO interview_sessions (
                     interview_id, style, status, transcript_json,
-                    main_question_count, current_main_question_follow_ups
+                    main_question_count, current_main_question_follow_ups, round_kind
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session.interview_id,
@@ -251,6 +272,7 @@ def save_session(session: InterviewSession) -> InterviewSession:
                     transcript_json,
                     session.main_question_count,
                     session.current_main_question_follow_ups,
+                    session.round_kind,
                 ),
             )
         inserted_id = int(cursor.lastrowid or session.id)
@@ -266,6 +288,7 @@ def save_session(session: InterviewSession) -> InterviewSession:
         transcript=list(session.transcript),
         main_question_count=session.main_question_count,
         current_main_question_follow_ups=session.current_main_question_follow_ups,
+        round_kind=session.round_kind,
     )
 
 
@@ -303,9 +326,8 @@ def read_session(session_id: int) -> InterviewSession | None:
     initialize_interview_session_schema()
     with connect() as connection:
         row: sqlite3.Row | None = connection.execute(
-            """
-            SELECT id, interview_id, style, status, transcript_json,
-                   main_question_count, current_main_question_follow_ups
+            f"""
+            SELECT {_SESSION_SELECT_COLUMNS}
             FROM interview_sessions
             WHERE id = ?
             """,
@@ -322,9 +344,8 @@ def list_in_progress_sessions() -> list[InterviewSession]:
     initialize_interview_session_schema()
     with connect() as connection:
         rows = connection.execute(
-            """
-            SELECT id, interview_id, style, status, transcript_json,
-                   main_question_count, current_main_question_follow_ups
+            f"""
+            SELECT {_SESSION_SELECT_COLUMNS}
             FROM interview_sessions
             WHERE status = 'in_progress'
             ORDER BY updated_at DESC, id DESC
@@ -333,8 +354,29 @@ def list_in_progress_sessions() -> list[InterviewSession]:
     return [_build_session_from_row(row) for row in rows]
 
 
-def create_new_session(*, interview_id: int, style: str) -> InterviewSession:
+def list_sessions_for_interview(interview_id: int) -> list[InterviewSession]:
+    """返回某场面试下的全部会话（含多轮面试的各轮 session），按创建顺序排列。
+
+    供多轮推进决策与 GET /interviews/{id}/rounds 聚合使用。
+    """
+
+    initialize_interview_session_schema()
+    with connect() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT {_SESSION_SELECT_COLUMNS}
+            FROM interview_sessions
+            WHERE interview_id = ?
+            ORDER BY id ASC
+            """,
+            (interview_id,),
+        ).fetchall()
+    return [_build_session_from_row(row) for row in rows]
+
+
+def create_new_session(*, interview_id: int, style: str, round_kind: str = "single_round") -> InterviewSession:
     normalized_style = style.strip() or "study"
+    normalized_round_kind = round_kind.strip() or "single_round"
     return save_session(
         InterviewSession(
             id=0,
@@ -344,6 +386,7 @@ def create_new_session(*, interview_id: int, style: str) -> InterviewSession:
             transcript=[],
             main_question_count=0,
             current_main_question_follow_ups=0,
+            round_kind=normalized_round_kind,
         )
     )
 

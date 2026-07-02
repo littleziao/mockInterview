@@ -41,10 +41,16 @@ from .interview_session import (
     append_candidate_answer,
     InterviewerAction,
     list_in_progress_sessions,
+    list_sessions_for_interview,
     read_session,
     resolve_interviewer_action,
     save_session,
     update_session,
+)
+from .interview_rounds import (
+    decide_next_round_kind,
+    get_round_template,
+    plan_rounds,
 )
 from .interview_review import (
     InterviewReview,
@@ -129,6 +135,7 @@ class ConfirmInterviewPayload(BaseModel):
     resume_markdown: str = Field(alias="resumeMarkdown")
     target_role: str = Field(default="", alias="targetRole")
     interview_mode: str = Field(default="single_round", alias="interviewMode")
+    include_hr_round: bool = Field(default=False, alias="includeHrRound")
     analysis: ResumeAnalysis
 
 
@@ -137,6 +144,7 @@ class InterviewPayload(BaseModel):
     resume_markdown: str = Field(serialization_alias="resumeMarkdown")
     target_role: str = Field(serialization_alias="targetRole")
     interview_mode: str = Field(serialization_alias="interviewMode")
+    include_hr_round: bool = Field(serialization_alias="includeHrRound")
     analysis: ResumeAnalysisPayload
 
 
@@ -261,6 +269,7 @@ def post_interview(payload: ConfirmInterviewPayload) -> InterviewPayload:
         resume_markdown=resume_markdown,
         target_role=payload.target_role.strip(),
         interview_mode=interview_mode,
+        include_hr_round=payload.include_hr_round,
         analysis=payload.analysis,
     )
     return InterviewPayload(
@@ -268,6 +277,7 @@ def post_interview(payload: ConfirmInterviewPayload) -> InterviewPayload:
         resume_markdown=interview.resume_markdown,
         target_role=interview.target_role,
         interview_mode=interview.interview_mode,
+        include_hr_round=interview.include_hr_round,
         analysis=_to_resume_analysis_payload(interview.analysis),
     )
 
@@ -288,6 +298,9 @@ class InterviewSessionPayload(BaseModel):
     current_main_question_follow_ups: int = Field(serialization_alias="currentMainQuestionFollowUps")
     main_question_limit: int = Field(serialization_alias="mainQuestionLimit")
     follow_up_limit: int = Field(serialization_alias="followUpLimit")
+    round_kind: str = Field(default="single_round", serialization_alias="roundKind")
+    round_title: str = Field(default="", serialization_alias="roundTitle")
+    round_focus: str = Field(default="", serialization_alias="roundFocus")
     transcript: list[TranscriptMessagePayload]
     review: "InterviewReviewPayload | None" = None
     review_error: str = Field(default="", serialization_alias="reviewError")
@@ -304,8 +317,21 @@ class ResumeableSessionPayload(BaseModel):
     current_main_question_follow_ups: int = Field(serialization_alias="currentMainQuestionFollowUps")
     main_question_limit: int = Field(serialization_alias="mainQuestionLimit")
     follow_up_limit: int = Field(serialization_alias="followUpLimit")
+    round_kind: str = Field(default="single_round", serialization_alias="roundKind")
+    round_title: str = Field(default="", serialization_alias="roundTitle")
+    round_focus: str = Field(default="", serialization_alias="roundFocus")
     target_role: str = Field(serialization_alias="targetRole")
     interview_mode: str = Field(serialization_alias="interviewMode")
+
+
+class RoundProgressPayload(BaseModel):
+    """多轮面试某轮的进度条目：模板信息 + 当前状态 + 关联 session。"""
+
+    kind: str
+    title: str
+    focus: str
+    status: str
+    session_id: int | None = Field(default=None, serialization_alias="sessionId")
 
 
 class StartSessionPayload(BaseModel):
@@ -344,6 +370,17 @@ def _to_transcript_payload(message: TranscriptMessage) -> TranscriptMessagePaylo
     )
 
 
+def _round_fields(round_kind: str) -> dict[str, str]:
+    template = get_round_template(round_kind)
+    if template is None:
+        return {"round_kind": round_kind, "round_title": "", "round_focus": ""}
+    return {
+        "round_kind": template.kind,
+        "round_title": template.title,
+        "round_focus": template.focus,
+    }
+
+
 def _to_session_payload(session: InterviewSession) -> InterviewSessionPayload:
     payload = InterviewSessionPayload(
         id=session.id,
@@ -355,6 +392,7 @@ def _to_session_payload(session: InterviewSession) -> InterviewSessionPayload:
         main_question_limit=DEFAULT_MAIN_QUESTIONS,
         follow_up_limit=DEFAULT_MAX_FOLLOW_UPS,
         transcript=[_to_transcript_payload(message) for message in session.transcript],
+        **_round_fields(session.round_kind),
     )
     completed_record = read_completed_interview_by_session(session.id)
     if completed_record is not None:
@@ -389,6 +427,32 @@ def _require_active_provider():
     if active_provider is None:
         raise HTTPException(status_code=400, detail="请先新增并选择一个模型供应商")
     return active_provider
+
+
+def _resolve_round_kind(interview: InterviewRecord) -> str:
+    """决定本次新建 session 所属轮次。
+
+    单轮面试固定 single_round（维持原行为）。多轮面试按默认轮次模板顺序推进：
+    存在尚未结束的轮次（in_progress / awaiting_review）时拒绝新建，避免同一面试出现多个进行中轮次；
+    全部轮次已结束/放弃时提示所有轮次已完成；否则启动下一个待进行轮次。
+    """
+
+    if interview.interview_mode != "multi_round":
+        return "single_round"
+
+    existing = list_sessions_for_interview(interview.id)
+    if any(session.status in ("in_progress", "awaiting_review") for session in existing):
+        raise HTTPException(status_code=409, detail="当前轮次尚未结束，请先完成或放弃后再进入下一轮")
+
+    planned = plan_rounds(interview.interview_mode, interview.include_hr_round)
+    existing_summary = [
+        {"round_kind": session.round_kind, "status": session.status} for session in existing
+    ]
+    next_kind = decide_next_round_kind(planned, existing_summary)
+    if next_kind is None:
+        raise HTTPException(status_code=409, detail="所有轮次已完成")
+
+    return next_kind
 
 
 def _ended_session_from(session: InterviewSession) -> InterviewSession:
@@ -453,6 +517,8 @@ def post_interview_session(interview_id: int, payload: StartSessionPayload | Non
 
     active_provider = _require_active_provider()
 
+    round_kind = _resolve_round_kind(interview)
+
     draft_session = InterviewSession(
         id=0,
         interview_id=interview_id,
@@ -461,6 +527,7 @@ def post_interview_session(interview_id: int, payload: StartSessionPayload | Non
         transcript=[],
         main_question_count=0,
         current_main_question_follow_ups=0,
+        round_kind=round_kind,
     )
     try:
         action = generate_next_interviewer_action_with_provider(
@@ -489,6 +556,7 @@ def post_interview_session(interview_id: int, payload: StartSessionPayload | Non
         transcript=[message],
         main_question_count=main_question_count,
         current_main_question_follow_ups=follow_ups,
+        round_kind=draft_session.round_kind,
     )
     return _to_session_payload(save_session(started_session))
 
@@ -512,6 +580,7 @@ def get_in_progress_sessions() -> list[ResumeableSessionPayload]:
                 follow_up_limit=DEFAULT_MAX_FOLLOW_UPS,
                 target_role=interview.target_role,
                 interview_mode=interview.interview_mode,
+                **_round_fields(session.round_kind),
             )
         )
     return payloads
@@ -682,6 +751,43 @@ def post_interview_session_review(session_id: int) -> InterviewSessionPayload:
     )
 
 
+def _round_status_from_session_status(status: str) -> str:
+    if status == "ended":
+        return "completed"
+    return status
+
+
+@app.get(
+    "/interviews/{interview_id}/rounds",
+    response_model=list[RoundProgressPayload],
+)
+def get_interview_rounds(interview_id: int) -> list[RoundProgressPayload]:
+    interview = read_interview(interview_id)
+    if interview is None:
+        raise HTTPException(status_code=404, detail="面试记录不存在")
+
+    planned = plan_rounds(interview.interview_mode, interview.include_hr_round)
+    if not planned:
+        return []
+
+    sessions = list_sessions_for_interview(interview_id)
+    session_by_kind = {session.round_kind: session for session in sessions}
+
+    payloads: list[RoundProgressPayload] = []
+    for template in planned:
+        session = session_by_kind.get(template.kind)
+        payloads.append(
+            RoundProgressPayload(
+                kind=template.kind,
+                title=template.title,
+                focus=template.focus,
+                status="pending" if session is None else _round_status_from_session_status(session.status),
+                session_id=session.id if session is not None else None,
+            )
+        )
+    return payloads
+
+
 @app.get("/interviews/{interview_id}", response_model=InterviewPayload)
 def get_interview(interview_id: int) -> InterviewPayload:
     interview = read_interview(interview_id)
@@ -693,5 +799,6 @@ def get_interview(interview_id: int) -> InterviewPayload:
         resume_markdown=interview.resume_markdown,
         target_role=interview.target_role,
         interview_mode=interview.interview_mode,
+        include_hr_round=interview.include_hr_round,
         analysis=_to_resume_analysis_payload(interview.analysis),
     )

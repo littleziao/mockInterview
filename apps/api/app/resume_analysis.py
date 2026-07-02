@@ -70,6 +70,7 @@ class InterviewRecord:
     target_role: str
     interview_mode: str
     analysis: ResumeAnalysis
+    include_hr_round: bool = False
 
 
 def _unwrap_analysis_payload(data: object) -> object:
@@ -147,9 +148,17 @@ def initialize_resume_analysis_schema() -> None:
             connection.execute(
                 "ALTER TABLE interviews ADD COLUMN interview_mode TEXT NOT NULL DEFAULT 'single_round'"
             )
+        if "include_hr_round" not in columns:
+            connection.execute(
+                "ALTER TABLE interviews ADD COLUMN include_hr_round INTEGER NOT NULL DEFAULT 0"
+            )
         connection.execute(
             "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
             ("0002_interviews",),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
+            ("0006_interview_include_hr",),
         )
 
 
@@ -158,6 +167,7 @@ def save_interview(
     resume_markdown: str,
     target_role: str,
     interview_mode: str = "single_round",
+    include_hr_round: bool = False,
     analysis: ResumeAnalysis,
 ) -> InterviewRecord:
     initialize_resume_analysis_schema()
@@ -165,13 +175,14 @@ def save_interview(
     with connect() as connection:
         cursor = connection.execute(
             """
-            INSERT INTO interviews (resume_markdown, target_role, interview_mode, analysis_json)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO interviews (resume_markdown, target_role, interview_mode, include_hr_round, analysis_json)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 resume_markdown,
                 target_role,
                 normalized_mode,
+                1 if include_hr_round else 0,
                 analysis.model_dump_json(),
             ),
         )
@@ -182,6 +193,7 @@ def save_interview(
         resume_markdown=resume_markdown,
         target_role=target_role,
         interview_mode=normalized_mode,
+        include_hr_round=include_hr_round,
         analysis=analysis,
     )
 
@@ -191,7 +203,7 @@ def read_interview(interview_id: int) -> InterviewRecord | None:
     with connect() as connection:
         row: sqlite3.Row | None = connection.execute(
             """
-            SELECT id, resume_markdown, target_role, interview_mode, analysis_json
+            SELECT id, resume_markdown, target_role, interview_mode, include_hr_round, analysis_json
             FROM interviews
             WHERE id = ?
             """,
@@ -206,5 +218,6 @@ def read_interview(interview_id: int) -> InterviewRecord | None:
         resume_markdown=str(row["resume_markdown"]),
         target_role=str(row["target_role"]),
         interview_mode=str(row["interview_mode"]),
+        include_hr_round=bool(row["include_hr_round"]) if "include_hr_round" in row.keys() else False,
         analysis=validate_resume_analysis(json.loads(str(row["analysis_json"]))),
     )

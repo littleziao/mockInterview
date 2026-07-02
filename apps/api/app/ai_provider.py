@@ -18,6 +18,7 @@ from .interview_session import (
     current_main_question_index,
     validate_interviewer_action,
 )
+from .interview_rounds import get_round_template
 from .interview_review import (
     ABILITY_DIMENSIONS,
     InterviewReview,
@@ -476,6 +477,8 @@ class OpenAICompatibleProvider:
             for message in session.transcript
         ) or "（无对话记录）"
 
+        round_section = self._round_prompt_section(session.round_kind, role="复盘")
+
         return (
             "请生成面试结束后的复盘与学习建议。"
             "必须只返回一个 JSON object，字段包含 overall_evaluation, highlights, main_issues, "
@@ -487,6 +490,7 @@ class OpenAICompatibleProvider:
             "score 为 1 到 5 的整数。"
             f"\n六个能力维度：{', '.join(ABILITY_DIMENSIONS)}"
             f"\nJSON 示例：\n{json.dumps(INTERVIEW_REVIEW_JSON_EXAMPLE, ensure_ascii=False)}"
+            f"{round_section}"
             f"\n目标岗位：{target_role or '未填写'}"
             f"\n背景摘要：{analysis.background_summary}"
             f"\n关键项目：{', '.join(analysis.key_projects)}"
@@ -516,6 +520,7 @@ class OpenAICompatibleProvider:
             if session.style == "study"
             else "压力面规则：语气更直接，追问证据、边界、取舍和结果；追问更紧凑，但不得羞辱、攻击或贬低候选人。"
         )
+        round_section = self._round_prompt_section(session.round_kind, role="提问与追问")
 
         return (
             "请基于已确认的简历分析，以真人面试官视角产生下一步动作。"
@@ -527,6 +532,7 @@ class OpenAICompatibleProvider:
             f"\nJSON 示例：\n{json.dumps(INTERVIEWER_ACTION_JSON_EXAMPLE, ensure_ascii=False)}"
             f"\n面试风格：{'学习梳理面' if session.style == 'study' else '压力面'}"
             f"\n{style_rules}"
+            f"{round_section}"
             f"\n当前允许动作：{allowed_actions}"
             f"\n目标岗位：{target_role or '未填写'}"
             f"\n背景摘要：{analysis.background_summary}"
@@ -562,6 +568,22 @@ class OpenAICompatibleProvider:
             return "只能返回 main_question 或 end_interview；当前主问题互动次数已达上限，禁止返回 follow_up 或 clarify。"
 
         return "可以返回 main_question、follow_up、clarify 或 end_interview；优先根据候选人最新回答决定是否追问、澄清、换题或结束。"
+
+    def _round_prompt_section(self, round_kind: str, *, role: str) -> str:
+        """多轮面试按当前轮次注入“面试官视角 + 考察重点”段落。
+
+        single_round 与未知 kind 返回空串，保持单轮面试 prompt 零回归。
+        """
+
+        template = get_round_template(round_kind)
+        if template is None:
+            return ""
+
+        return (
+            f"\n当前轮次：{template.title}。"
+            f"\n考察重点：{template.focus}。"
+            f"\n你是这一轮的面试官，只从这一轮的视角{role}，不要越界到其他轮次的考察范围。"
+        )
 
 
 def _load_json_content(content: str) -> object:
