@@ -9,11 +9,11 @@
   ],
   "scripts": {
     "dev": "npm --workspace @mock-interview/web run dev",
-    "dev:api": "conda run --no-capture-output -n base python -m uvicorn apps.api.app.main:app --reload --host 127.0.0.1 --port 8000 --log-level info --access-log",
+    "dev:api": "conda run --no-capture-output -n dev python -m uvicorn apps.api.app.main:app --reload --host 127.0.0.1 --port 8000 --log-level info --access-log",
     "build": "npm --workspace @mock-interview/core run build && npm --workspace @mock-interview/web run build",
     "lint": "npm --workspace @mock-interview/core run lint && npm --workspace @mock-interview/web run lint",
     "test": "npm run test:api && npm run test:web",
-    "test:api": "conda run --no-capture-output -n base python -m pytest apps/api/tests",
+    "test:api": "conda run --no-capture-output -n dev python -m pytest apps/api/tests",
     "test:web": "npm --workspace @mock-interview/web run test",
     "typecheck": "npm --workspace @mock-interview/core run typecheck && npm --workspace @mock-interview/web run typecheck"
   },
