@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -21,10 +21,25 @@ type InProgressMockSession = {
 
 let inProgressSessionsMock: InProgressMockSession[] = [];
 
+type MockRoundProgress = {
+  kind: string;
+  title: string;
+  focus: string;
+  status: string;
+  sessionId?: number | null;
+};
+
+let roundsProgressMock: MockRoundProgress[] = [];
+let sessionRoundKindMock = "peer_technical";
+let sessionRoundTitleMock = "同事技术面";
+
 describe("App", () => {
   beforeEach(() => {
     interviewAnswerCount = 0;
     inProgressSessionsMock = [];
+    roundsProgressMock = [];
+    sessionRoundKindMock = "peer_technical";
+    sessionRoundTitleMock = "同事技术面";
     window.location.hash = "#/";
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
@@ -124,6 +139,9 @@ describe("App", () => {
             currentMainQuestionFollowUps: 0,
             mainQuestionLimit: 6,
             followUpLimit: 2,
+            roundKind: sessionRoundKindMock,
+            roundTitle: sessionRoundTitleMock,
+            roundFocus: "基础技术、简历真实性、项目细节和协作可行性",
             transcript: [
               {
                 role: "interviewer",
@@ -133,6 +151,10 @@ describe("App", () => {
               }
             ]
           });
+        }
+
+        if (url.match(/\/interviews\/\d+\/rounds$/) && !init) {
+          return Response.json(roundsProgressMock);
         }
 
         if (url.match(/\/interview-sessions\/\d+\/answers$/) && init?.method === "POST") {
@@ -581,5 +603,94 @@ describe("App", () => {
       "http://127.0.0.1:8000/interviews",
       expect.objectContaining({ method: "POST" })
     );
+  });
+
+  async function runMultiRoundToInterview(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("button", { name: "解析简历" }));
+    await screen.findByRole("heading", { name: "简历解析与配置" });
+    await user.click(screen.getByRole("button", { name: "多轮面试" }));
+    await user.click(screen.getByRole("button", { name: "确认配置并开始面试" }));
+    await screen.findByRole("heading", { name: "开始面试" });
+  }
+
+  it("选择多轮时展示 HR 面复选框、轮次预览并透传 includeHrRound", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "解析简历" }));
+    await screen.findByRole("heading", { name: "简历解析与配置" });
+
+    await user.click(screen.getByRole("button", { name: "多轮面试" }));
+    const hrCheckbox = await screen.findByRole("checkbox", { name: /加入 HR 面/ });
+    const preview = screen.getByLabelText("多轮面试轮次预览");
+    expect(preview.querySelectorAll("li")).toHaveLength(3);
+    expect(within(preview).queryByText("HR 面")).not.toBeInTheDocument();
+
+    await user.click(hrCheckbox);
+    const items = preview.querySelectorAll("li");
+    expect(items).toHaveLength(4);
+    expect(within(preview).getByText("HR 面")).toBeInTheDocument();
+    // focus 文案需与后端 apps/api/app/interview_rounds.py 逐字一致，此处守住前端镜像不漂移。
+    expect(within(preview).getByText("基础技术、简历真实性、项目细节和协作可行性")).toBeInTheDocument();
+    expect(within(preview).getByText("求职动机、稳定性、薪资期望、入职时间和职业规划")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "确认配置并开始面试" }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        "http://127.0.0.1:8000/interviews",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining('"includeHrRound":true')
+        })
+      );
+    });
+    expect(await screen.findByLabelText("面试配置摘要")).toHaveTextContent("同事技术面");
+  });
+
+  it("多轮复盘后存在待进行轮次时展示进入下一轮入口并触发推进", async () => {
+    roundsProgressMock = [
+      { kind: "peer_technical", title: "同事技术面", focus: "同事焦点", status: "completed", sessionId: 31 },
+      { kind: "senior_technical", title: "资深技术面", focus: "资深焦点", status: "pending" },
+      { kind: "manager_comprehensive", title: "主管综合面", focus: "主管焦点", status: "pending" }
+    ];
+    const user = userEvent.setup();
+    render(<App />);
+
+    await runMultiRoundToInterview(user);
+    await user.click(screen.getByRole("button", { name: "手动结束" }));
+    await screen.findByText("面试已结束，请确认是否生成复盘。");
+    await user.click(screen.getByRole("button", { name: "生成复盘" }));
+
+    expect(await screen.findByRole("heading", { name: "面试复盘" })).toBeInTheDocument();
+    expect(await screen.findByText("下一轮：资深技术面")).toBeInTheDocument();
+    const nextButton = screen.getByRole("button", { name: /进入下一轮/ });
+    expect(nextButton).toBeInTheDocument();
+
+    await user.click(nextButton);
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        "http://127.0.0.1:8000/interviews/7/sessions",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+    expect(await screen.findByRole("heading", { name: "开始面试" })).toBeInTheDocument();
+  });
+
+  it("多轮全部轮次完成时复盘页提示全部完成", async () => {
+    roundsProgressMock = [
+      { kind: "peer_technical", title: "同事技术面", focus: "", status: "completed" },
+      { kind: "senior_technical", title: "资深技术面", focus: "", status: "completed" },
+      { kind: "manager_comprehensive", title: "主管综合面", focus: "", status: "completed" }
+    ];
+    const user = userEvent.setup();
+    render(<App />);
+
+    await runMultiRoundToInterview(user);
+    await user.click(screen.getByRole("button", { name: "手动结束" }));
+    await user.click(await screen.findByRole("button", { name: "生成复盘" }));
+
+    expect(await screen.findByText(/全部轮次已完成/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /进入下一轮/ })).not.toBeInTheDocument();
   });
 });

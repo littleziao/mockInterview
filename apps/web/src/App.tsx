@@ -26,7 +26,8 @@ import {
 import {
   capabilityModel,
   defaultInterviewConfig,
-  defaultRoundTemplates
+  defaultRoundTemplates,
+  roundTemplatesForMode
 } from "@mock-interview/core";
 
 const resumePreview = [
@@ -101,6 +102,9 @@ type InterviewSession = {
   currentMainQuestionFollowUps: number;
   mainQuestionLimit: number;
   followUpLimit: number;
+  roundKind?: string;
+  roundTitle?: string;
+  roundFocus?: string;
   transcript: TranscriptMessage[];
   review?: InterviewReview | null;
   reviewError?: string;
@@ -115,8 +119,19 @@ type ResumeableSession = {
   currentMainQuestionFollowUps: number;
   mainQuestionLimit: number;
   followUpLimit: number;
+  roundKind?: string;
+  roundTitle?: string;
+  roundFocus?: string;
   targetRole: string;
   interviewMode: InterviewMode;
+};
+
+type RoundProgress = {
+  kind: string;
+  title: string;
+  focus: string;
+  status: "pending" | "in_progress" | "awaiting_review" | "completed" | "abandoned";
+  sessionId?: number | null;
 };
 
 type ResumedInterview = {
@@ -124,6 +139,7 @@ type ResumedInterview = {
   resumeMarkdown: string;
   targetRole: string;
   interviewMode: InterviewMode;
+  includeHrRound?: boolean;
   analysis: ResumeAnalysis;
 };
 
@@ -588,6 +604,10 @@ function NewInterviewFlow({
   const [isSavingInterview, setIsSavingInterview] = useState(false);
   const [interviewMode, setInterviewMode] = useState<InterviewMode>("single_round");
   const [interviewStyle, setInterviewStyle] = useState<InterviewSessionStyle>("study");
+  const [includeHrRound, setIncludeHrRound] = useState(false);
+  const [roundsProgress, setRoundsProgress] = useState<RoundProgress[]>([]);
+  const [isStartingNextRound, setIsStartingNextRound] = useState(false);
+  const [nextRoundError, setNextRoundError] = useState("");
   const [savedInterviewId, setSavedInterviewId] = useState<number | null>(null);
   const [session, setSession] = useState<InterviewSession | null>(null);
   const [answerDraft, setAnswerDraft] = useState("");
@@ -605,11 +625,13 @@ function NewInterviewFlow({
     setTargetRole(resumeContext.interview.targetRole);
     setAnalysis(resumeContext.interview.analysis);
     setInterviewMode(resumeContext.interview.interviewMode);
+    setIncludeHrRound(resumeContext.interview.includeHrRound ?? false);
     setInterviewStyle(resumeContext.session.style);
     setSavedInterviewId(resumeContext.interview.id);
     setSession(resumeContext.session);
     setAnswerDraft("");
     setInterviewError("");
+    setNextRoundError("");
     setWorkflowMessage("已恢复未完成的面试，可继续作答");
   }, [resumeContext]);
 
@@ -727,6 +749,7 @@ function NewInterviewFlow({
             resumeMarkdown,
             targetRole,
             interviewMode,
+            includeHrRound: interviewMode === "multi_round" ? includeHrRound : false,
             analysis: {
               background_summary: analysis.backgroundSummary,
               key_projects: analysis.keyProjects,
@@ -846,6 +869,71 @@ function NewInterviewFlow({
       setInterviewError(error instanceof Error ? error.message : "生成复盘失败");
     } finally {
       setIsGeneratingReview(false);
+    }
+  }
+
+  // 多轮面试：当前轮复盘完成后，拉取轮次进度，用于在复盘页展示「进入下一轮」入口。
+  useEffect(() => {
+    if (session?.status !== "ended") {
+      return;
+    }
+    if (interviewMode !== "multi_round" || savedInterviewId === null) {
+      return;
+    }
+    let mounted = true;
+    async function loadRounds() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/interviews/${savedInterviewId}/rounds`);
+        if (!response.ok) {
+          return;
+        }
+        const rounds = (await response.json()) as RoundProgress[];
+        if (mounted) {
+          setRoundsProgress(rounds);
+        }
+      } catch {
+        // 进度加载失败不阻塞复盘展示。
+      }
+    }
+    void loadRounds();
+    return () => {
+      mounted = false;
+    };
+  }, [session?.status, interviewMode, savedInterviewId]);
+
+  const nextRound = useMemo(
+    () => roundsProgress.find((round) => round.status === "pending") ?? null,
+    [roundsProgress]
+  );
+  const multiRoundCompleted =
+    interviewMode === "multi_round" && roundsProgress.length > 0 && nextRound === null;
+
+  async function startNextRound() {
+    if (savedInterviewId === null) {
+      return;
+    }
+    setIsStartingNextRound(true);
+    setNextRoundError("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/interviews/${savedInterviewId}/sessions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ style: interviewStyle })
+      });
+      if (!response.ok) {
+        const detail = (await response.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(detail?.detail ?? "进入下一轮失败");
+      }
+      const nextSession = (await response.json()) as InterviewSession;
+      setSession(nextSession);
+      setRoundsProgress([]);
+      setAnswerDraft("");
+      setWorkflowMessage(`已进入${nextSession.roundTitle ?? "下一轮"}，可继续作答`);
+      onNavigateStep("interview");
+    } catch (error) {
+      setNextRoundError(error instanceof Error ? error.message : "进入下一轮失败");
+    } finally {
+      setIsStartingNextRound(false);
     }
   }
 
@@ -1047,6 +1135,29 @@ function NewInterviewFlow({
             </div>
           </div>
 
+          {interviewMode === "multi_round" ? (
+            <div className="multiRoundConfig">
+              <label className="hrToggle">
+                <input
+                  checked={includeHrRound}
+                  disabled={Boolean(session)}
+                  onChange={(event) => setIncludeHrRound(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>加入 HR 面</span>
+                <small>在主管综合面后追加 HR 面，考察求职动机、稳定性与职业规划</small>
+              </label>
+              <ul className="roundPreview" aria-label="多轮面试轮次预览">
+                {roundTemplatesForMode(interviewMode, includeHrRound).map((round) => (
+                  <li key={round.kind}>
+                    <strong>{round.title}</strong>
+                    <span>{round.focus}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
           {workflowMessage ? <div className="workflowMessage">{workflowMessage}</div> : null}
 
           <div className="analysisGrid">
@@ -1131,8 +1242,13 @@ function NewInterviewFlow({
   if (step === "review" && session?.review) {
     return (
       <ReviewPage
+        isStartingNextRound={isStartingNextRound}
         modeLabel={interviewModeOptions.find((option) => option.value === interviewMode)?.label ?? "单轮面试"}
+        multiRoundCompleted={multiRoundCompleted}
+        nextRound={nextRound}
+        nextRoundError={nextRoundError}
         onBackToInterview={() => onNavigateStep("interview")}
+        onStartNextRound={startNextRound}
         review={session.review}
         session={session}
         styleLabel={interviewStyleOptions.find((option) => option.value === interviewStyle)?.label ?? "学习梳理面"}
@@ -1167,6 +1283,12 @@ function NewInterviewFlow({
           <span>面试风格</span>
           <strong>{interviewStyleOptions.find((option) => option.value === interviewStyle)?.label}</strong>
         </div>
+        {interviewMode === "multi_round" && session.roundTitle ? (
+          <div>
+            <span>当前轮次</span>
+            <strong>{session.roundTitle}</strong>
+          </div>
+        ) : null}
         <div>
           <span>进度</span>
           <strong>
@@ -1331,21 +1453,32 @@ function ReviewSection({ title, items }: { title: string; items: string[] }) {
 }
 
 function ReviewPage({
+  isStartingNextRound,
   modeLabel,
+  multiRoundCompleted,
+  nextRound,
+  nextRoundError,
   onBackToInterview,
+  onStartNextRound,
   review,
   session,
   styleLabel,
   targetRole
 }: {
+  isStartingNextRound: boolean;
   modeLabel: string;
+  multiRoundCompleted: boolean;
+  nextRound: RoundProgress | null;
+  nextRoundError: string;
   onBackToInterview: () => void;
+  onStartNextRound: () => void;
   review: InterviewReview;
   session: InterviewSession;
   styleLabel: string;
   targetRole: string;
 }) {
   const markdown = buildReviewMarkdown({ modeLabel, review, session, styleLabel, targetRole });
+  const showRoundNavigation = Boolean(nextRound) || multiRoundCompleted;
 
   return (
     <section className="panel setupPanel reviewPage" aria-labelledby="review-title">
@@ -1366,6 +1499,36 @@ function ReviewPage({
         </div>
       </div>
 
+      {showRoundNavigation ? (
+        <div className="nextRoundBanner" aria-label="多轮面试进度">
+          {nextRound ? (
+            <>
+              <div>
+                <strong>下一轮：{nextRound.title}</strong>
+                <span>{nextRound.focus}</span>
+              </div>
+              <button
+                className="primaryButton"
+                disabled={isStartingNextRound}
+                onClick={onStartNextRound}
+                type="button"
+              >
+                <MessagesSquare size={16} aria-hidden="true" />
+                {isStartingNextRound ? "进入中" : `进入下一轮：${nextRound.title}`}
+              </button>
+            </>
+          ) : (
+            <div>
+              <CheckCircle2 size={18} aria-hidden="true" />
+              <span>全部轮次已完成，可回到首页或新建面试继续练习。</span>
+            </div>
+          )}
+          {nextRoundError ? (
+            <div className="workflowMessage failure">{nextRoundError}</div>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="readonlySummary" aria-label="复盘配置摘要">
         <div>
           <span>目标岗位</span>
@@ -1379,6 +1542,12 @@ function ReviewPage({
           <span>面试风格</span>
           <strong>{styleLabel}</strong>
         </div>
+        {session.roundTitle ? (
+          <div>
+            <span>当前轮次</span>
+            <strong>{session.roundTitle}</strong>
+          </div>
+        ) : null}
         <div>
           <span>主问题</span>
           <strong>
@@ -1638,7 +1807,10 @@ function ResumableInterviews({
               <div className="resumeSummary">
                 <strong>目标岗位：{session.targetRole || "由简历推断"}</strong>
                 <span>
-                  {modeLabel} · {styleLabel} · 第 {Math.max(session.mainQuestionCount, 0)} / {session.mainQuestionLimit} 个主问题
+                  {modeLabel} · {styleLabel}
+                  {session.roundTitle ? ` · ${session.roundTitle}` : ""}
+                  {" · 第 "}
+                  {Math.max(session.mainQuestionCount, 0)} / {session.mainQuestionLimit} 个主问题
                 </span>
               </div>
               <div className="resumeActions">
