@@ -1193,6 +1193,11 @@ fieldset {
 }
 
 /* 首页「未完成的面试」卡片：与历史记录卡片保持一致的列表项外观。 */
+.homeResumePanel {
+  margin-bottom: 18px;
+  padding: 22px;
+}
+
 .resumeList {
   display: grid;
   gap: 10px;
@@ -1355,9 +1360,14 @@ fieldset {
   .readonlySummary,
   .emptyRouteState,
   .historyItem,
+  .resumeItem,
   .trendRow {
     grid-template-columns: 1fr;
     grid-column: span 1;
+  }
+
+  .resumeActions {
+    flex-wrap: wrap;
   }
 
   .rightRail {

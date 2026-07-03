@@ -2209,7 +2209,7 @@ function ResumableInterviews({
   }
 
   return (
-    <section className="panel" aria-labelledby="resume-title">
+    <section className="panel homeResumePanel" aria-labelledby="resume-title">
       <div className="sectionHeader">
         <div>
           <h2 id="resume-title">未完成的面试</h2>
