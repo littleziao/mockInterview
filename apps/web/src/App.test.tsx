@@ -32,6 +32,17 @@ type MockRoundProgress = {
 let roundsProgressMock: MockRoundProgress[] = [];
 let sessionRoundKindMock = "peer_technical";
 let sessionRoundTitleMock = "同事技术面";
+let resumeAnalysisRecordsMock: {
+  id: number;
+  targetRole: string;
+  summary: string;
+  keyProjects: string[];
+  technicalStack: string[];
+  followUpTopics: string[];
+  createdAt: string;
+  lastUsedAt: string;
+  useCount: number;
+}[] = [];
 
 // 默认 fetch mock 对 /answers 同步返回。乐观渲染需要验证「fetch 已发出但响应未到达」的中间态，
 // 因此允许单个测试注入自定义处理器（例如挂起响应或返回失败状态）。
@@ -128,6 +139,8 @@ const historyPayloadMock = {
   ]
 };
 
+let deletedHistoryRecordIds: number[] = [];
+
 // 服务端对一次回答的权威响应：transcript 同时包含用户刚提交的回答与面试官的新消息。
 // 乐观渲染测试用它作为「整体替换」的目标数据。
 function buildAnswerResponse(answer: string) {
@@ -160,7 +173,9 @@ describe("App", () => {
     roundsProgressMock = [];
     sessionRoundKindMock = "peer_technical";
     sessionRoundTitleMock = "同事技术面";
+    resumeAnalysisRecordsMock = [];
     answersHandlerOverride = null;
+    deletedHistoryRecordIds = [];
     window.location.hash = "#/";
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
@@ -180,19 +195,55 @@ describe("App", () => {
           return Response.json(inProgressSessionsMock);
         }
 
+        if (url.endsWith("/resume-analysis-records") && !init) {
+          return Response.json({ records: resumeAnalysisRecordsMock });
+        }
+
+        if (url.match(/\/history\/\d+$/) && init?.method === "DELETE") {
+          const deletedRecordId = Number(url.split("/").at(-1));
+          deletedHistoryRecordIds.push(deletedRecordId);
+          return new Response(null, { status: 204 });
+        }
+
         if (url.includes("/history") && !init) {
+          const visibleRecords = historyPayloadMock.records.filter(
+            (record) => !deletedHistoryRecordIds.includes(record.id)
+          );
+          const visibleRecordIds = new Set(visibleRecords.map((record) => record.id));
+          const visibleTrends = historyPayloadMock.trends.map((trend) => {
+            const points = trend.points.filter((point) => visibleRecordIds.has(point.historyRecordId));
+            return {
+              ...trend,
+              points,
+              averageScore: points.length
+                ? points.reduce((total, point) => total + point.score, 0) / points.length
+                : 0
+            };
+          });
+
           if (url.includes("target_role=%E5%89%8D%E7%AB%AF%E5%B7%A5%E7%A8%8B%E5%B8%88")) {
+            const frontendRecords = visibleRecords.filter((record) => record.targetRole === "前端工程师");
+            const frontendRecordIds = new Set(frontendRecords.map((record) => record.id));
             return Response.json({
               ...historyPayloadMock,
-              records: historyPayloadMock.records.filter((record) => record.targetRole === "前端工程师"),
-              trends: historyPayloadMock.trends.map((trend) => ({
-                ...trend,
-                averageScore: trend.points[0]?.score ?? 0,
-                points: trend.points.filter((point) => point.historyRecordId === 1)
-              }))
+              records: frontendRecords,
+              trends: visibleTrends.map((trend) => {
+                const points = trend.points.filter((point) => frontendRecordIds.has(point.historyRecordId));
+                return {
+                  ...trend,
+                  points,
+                  averageScore: points.length
+                    ? points.reduce((total, point) => total + point.score, 0) / points.length
+                    : 0
+                };
+              })
             });
           }
-          return Response.json(historyPayloadMock);
+          return Response.json({
+            ...historyPayloadMock,
+            records: visibleRecords,
+            trends: visibleTrends
+          });
         }
 
         if (url.endsWith("/settings/ai-provider") && !init) {
@@ -242,6 +293,21 @@ describe("App", () => {
         }
 
         if (url.endsWith("/resume-analyses/generate")) {
+          const body = JSON.parse(String(init?.body ?? "{}"));
+          resumeAnalysisRecordsMock = [
+            {
+              id: resumeAnalysisRecordsMock.length + 1,
+              targetRole: body.targetRole,
+              summary: "候选人具备前端工程经验",
+              keyProjects: ["Mock Interview"],
+              technicalStack: ["React", "FastAPI"],
+              followUpTopics: ["项目职责", "技术取舍"],
+              createdAt: "2026-07-03 10:15:00",
+              lastUsedAt: "2026-07-03 10:15:00",
+              useCount: 0
+            },
+            ...resumeAnalysisRecordsMock
+          ];
           return Response.json({
             backgroundSummary: "候选人具备前端工程经验",
             keyProjects: ["Mock Interview"],
@@ -559,6 +625,39 @@ describe("App", () => {
     expect(screen.getByLabelText("逐题对话复盘")).toHaveTextContent("我负责历史与趋势页。");
   });
 
+  it("在历史与趋势页二次确认后删除完成记录并刷新列表、详情和趋势", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "历史与趋势" }));
+
+    expect(await screen.findByRole("heading", { name: "历史与趋势" })).toBeInTheDocument();
+    expect(screen.getByLabelText("已完成面试记录列表")).toHaveTextContent("后端工程师");
+    expect(screen.getByLabelText("历史统计")).toHaveTextContent("2");
+    expect(screen.getByLabelText("六维能力趋势")).toHaveTextContent("平均 4.0 / 5");
+    expect(screen.getByLabelText("历史复盘详情")).toHaveTextContent("后端复盘：接口边界清楚，排障细节还可以加强。");
+
+    await user.click(screen.getByRole("button", { name: "删除后端工程师完成记录" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "删除已完成面试记录" });
+    expect(dialog).toHaveTextContent("会删除这次面试的对话、复盘和能力评分，并从长期趋势中移除");
+    await user.click(within(dialog).getByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        "http://127.0.0.1:8000/history/2",
+        expect.objectContaining({ method: "DELETE" })
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByLabelText("已完成面试记录列表")).not.toHaveTextContent("后端工程师");
+    });
+    expect(screen.getByLabelText("历史统计")).toHaveTextContent("1");
+    expect(screen.queryByText("后端复盘：接口边界清楚，排障细节还可以加强。")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("历史复盘详情")).toHaveTextContent("前端复盘：能说明页面结构");
+    expect(screen.getByLabelText("六维能力趋势")).toHaveTextContent("平均 3.0 / 5");
+  });
+
   it("覆盖新建面试流程三步主路径、可编辑简历分析和只读面试配置摘要", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -648,6 +747,23 @@ describe("App", () => {
 
     expect(URL.createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:mock-review");
+  });
+
+  it("解析成功后回到首页可看到简历分析历史列表", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "解析简历" }));
+    expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "首页" }));
+
+    const historyList = await screen.findByLabelText("简历分析历史列表");
+    expect(historyList).toHaveTextContent("前端工程师");
+    expect(historyList).toHaveTextContent("候选人具备前端工程经验");
+    expect(historyList).toHaveTextContent("使用 0 次");
+    expect(historyList).toHaveTextContent("Mock Interview");
+    expect(historyList).toHaveTextContent("React / FastAPI");
   });
 
   it("回退修改目标岗位后显式失效已生成的简历分析", async () => {

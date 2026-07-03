@@ -85,6 +85,22 @@ type ResumeAnalysis = {
  lowPriorityFollowUpTopics: string[];
 };
 
+type ResumeAnalysisRecord = {
+  id: number;
+  targetRole: string;
+  summary: string;
+  keyProjects: string[];
+  technicalStack: string[];
+  followUpTopics: string[];
+  createdAt: string;
+  lastUsedAt: string;
+  useCount: number;
+};
+
+type ResumeAnalysisRecordsPayload = {
+  records: ResumeAnalysisRecord[];
+};
+
 type InterviewSessionStyle = "study" | "pressure";
 type InterviewMode = "single_round" | "multi_round";
 type NewInterviewStep = "upload" | "analysis" | "interview" | "review";
@@ -626,12 +642,14 @@ function SettingsPage() {
 function NewInterviewFlow({
   hasInProgressInterview,
   onAbandonActiveInterview,
+  onResumeAnalysisCreated,
   onNavigateStep,
   resumeContext,
   step
 }: {
   hasInProgressInterview: boolean;
   onAbandonActiveInterview: (sessionId: number) => Promise<void> | void;
+  onResumeAnalysisCreated: () => Promise<void> | void;
   onNavigateStep: (step: NewInterviewStep) => void;
   resumeContext: ResumeContext | null;
   step: NewInterviewStep;
@@ -760,6 +778,7 @@ function NewInterviewFlow({
         throw new Error(detail?.detail ?? "生成简历分析失败");
       }
       setAnalysis((await response.json()) as ResumeAnalysis);
+      await onResumeAnalysisCreated();
       setSavedInterviewId(null);
       setSession(null);
       setAnswerDraft("");
@@ -1532,6 +1551,9 @@ function HistoryPage() {
   const [selectedTargetRole, setSelectedTargetRole] = useState("");
   const [selectedRecordId, setSelectedRecordId] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [pendingDeleteRecord, setPendingDeleteRecord] = useState<HistoryRecord | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -1571,10 +1593,33 @@ function HistoryPage() {
     return () => {
       mounted = false;
     };
-  }, [selectedTargetRole]);
+  }, [selectedTargetRole, reloadToken]);
 
   const selectedRecord = history.records.find((record) => record.id === selectedRecordId) ?? history.records[0];
   const filteredLabel = selectedTargetRole || "全部岗位";
+
+  async function deletePendingRecord() {
+    if (!pendingDeleteRecord) {
+      return;
+    }
+    setIsDeleting(true);
+    setError("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/history/${pendingDeleteRecord.id}`, {
+        method: "DELETE"
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(payload?.detail || "删除已完成面试记录失败");
+      }
+      setPendingDeleteRecord(null);
+      setReloadToken((current) => current + 1);
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "删除已完成面试记录失败");
+    } finally {
+      setIsDeleting(false);
+    }
+  }
 
   return (
     <section className="panel historyPage" aria-labelledby="history-title">
@@ -1651,10 +1696,22 @@ function HistoryPage() {
                           {record.roundTitle ? ` · ${record.roundTitle}` : ""}
                         </span>
                       </div>
-                      <button className="secondaryButton" onClick={() => setSelectedRecordId(record.id)} type="button">
-                        <Eye size={16} aria-hidden="true" />
-                        查看复盘
-                      </button>
+                      <div className="historyItemActions">
+                        <button className="secondaryButton" onClick={() => setSelectedRecordId(record.id)} type="button">
+                          <Eye size={16} aria-hidden="true" />
+                          查看复盘
+                        </button>
+                        <button
+                          aria-label={`删除${record.targetRole || "由简历推断"}完成记录`}
+                          className="dangerButton"
+                          disabled={isDeleting}
+                          onClick={() => setPendingDeleteRecord(record)}
+                          type="button"
+                        >
+                          <Trash2 size={16} aria-hidden="true" />
+                          删除
+                        </button>
+                      </div>
                     </li>
                   );
                 })}
@@ -1717,6 +1774,39 @@ function HistoryPage() {
             </section>
           ) : null}
         </>
+      ) : null}
+
+      {pendingDeleteRecord ? (
+        <div className="dialogBackdrop" role="presentation">
+          <div
+            aria-labelledby="delete-history-title"
+            aria-modal="true"
+            className="confirmDialog"
+            role="dialog"
+          >
+            <div>
+              <h3 id="delete-history-title">删除已完成面试记录</h3>
+              <p>
+                确认后会删除这次面试的对话、复盘和能力评分，并从长期趋势中移除。
+                不会删除简历分析记录，也不会删除同一多轮面试下的其他轮次。
+              </p>
+            </div>
+            <div className="dialogActions">
+              <button
+                className="secondaryButton"
+                disabled={isDeleting}
+                onClick={() => setPendingDeleteRecord(null)}
+                type="button"
+              >
+                取消
+              </button>
+              <button className="dangerButton" disabled={isDeleting} onClick={deletePendingRecord} type="button">
+                <Trash2 size={16} aria-hidden="true" />
+                确认删除
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </section>
   );
@@ -2257,9 +2347,54 @@ function ResumableInterviews({
   );
 }
 
+function ResumeAnalysisHistory({ records }: { records: ResumeAnalysisRecord[] }) {
+  return (
+    <section className="panel homeResumeAnalysisPanel" aria-labelledby="resume-analysis-history-title">
+      <div className="sectionHeader">
+        <div>
+          <h2 id="resume-analysis-history-title">简历分析历史</h2>
+          <p>成功解析过的 Markdown 简历会保存在这里，便于确认和辨认。</p>
+        </div>
+      </div>
+
+      {records.length === 0 ? (
+        <div className="emptyState">暂无简历分析记录，解析成功后会出现在这里。</div>
+      ) : (
+        <ul className="resumeAnalysisList" aria-label="简历分析历史列表">
+          {records.map((record) => (
+            <li className="resumeAnalysisItem" key={record.id}>
+              <div className="resumeAnalysisItemHeader">
+                <strong>{record.targetRole || "由简历推断"}</strong>
+                <span>创建 {formatCompletedAt(record.createdAt)}</span>
+              </div>
+              <p>{record.summary}</p>
+              <div className="resumeAnalysisMeta">
+                <span>使用 {record.useCount} 次</span>
+                <span>最后使用 {formatCompletedAt(record.lastUsedAt)}</span>
+              </div>
+              <div className="resumeAnalysisTags" aria-label={`简历分析记录 ${record.id} 摘要`}>
+                {record.keyProjects.slice(0, 2).map((project) => (
+                  <span key={`project-${record.id}-${project}`}>{project}</span>
+                ))}
+                {record.technicalStack.length > 0 ? (
+                  <span>{record.technicalStack.slice(0, 3).join(" / ")}</span>
+                ) : null}
+                {record.followUpTopics.slice(0, 1).map((topic) => (
+                  <span key={`topic-${record.id}-${topic}`}>{topic}</span>
+                ))}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 export function App() {
   const [route, setRoute] = useState<RouteId>(() => routeFromHash(window.location.hash));
   const [inProgressSessions, setInProgressSessions] = useState<ResumeableSession[]>([]);
+  const [resumeAnalysisRecords, setResumeAnalysisRecords] = useState<ResumeAnalysisRecord[]>([]);
   const [resumeContext, setResumeContext] = useState<ResumeContext | null>(null);
   const [resumeError, setResumeError] = useState("");
 
@@ -2270,6 +2405,23 @@ export function App() {
 
     window.addEventListener("hashchange", syncRouteFromHash);
     return () => window.removeEventListener("hashchange", syncRouteFromHash);
+  }, []);
+
+  async function loadResumeAnalysisRecords() {
+    try {
+      const response = await fetch(`${apiBaseUrl}/resume-analysis-records`);
+      if (!response.ok) {
+        return;
+      }
+      const payload = (await response.json()) as ResumeAnalysisRecordsPayload;
+      setResumeAnalysisRecords(payload.records);
+    } catch {
+      // 简历分析历史加载失败不阻塞首页和新建面试主流程。
+    }
+  }
+
+  useEffect(() => {
+    void loadResumeAnalysisRecords();
   }, []);
 
   useEffect(() => {
@@ -2377,11 +2529,14 @@ export function App() {
         ) : (
           <>
             {route === "home" ? (
-              <ResumableInterviews
-                onAbandon={abandonInterview}
-                onResume={resumeInterview}
-                sessions={inProgressSessions}
-              />
+              <>
+                <ResumableInterviews
+                  onAbandon={abandonInterview}
+                  onResume={resumeInterview}
+                  sessions={inProgressSessions}
+                />
+                <ResumeAnalysisHistory records={resumeAnalysisRecords} />
+              </>
             ) : null}
             {resumeError && route === "home" ? (
               <div className="workflowMessage failure">{resumeError}</div>
@@ -2389,6 +2544,7 @@ export function App() {
             <NewInterviewFlow
               hasInProgressInterview={inProgressSessions.length > 0}
               onAbandonActiveInterview={abandonInterview}
+              onResumeAnalysisCreated={loadResumeAnalysisRecords}
               onNavigateStep={(step) => navigate(routeForStep(step))}
               resumeContext={resumeContext}
               step={newInterviewStep}

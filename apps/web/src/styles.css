@@ -1193,12 +1193,14 @@ fieldset {
 }
 
 /* 首页「未完成的面试」卡片：与历史记录卡片保持一致的列表项外观。 */
-.homeResumePanel {
+.homeResumePanel,
+.homeResumeAnalysisPanel {
   margin-bottom: 18px;
   padding: 22px;
 }
 
-.resumeList {
+.resumeList,
+.resumeAnalysisList {
   display: grid;
   gap: 10px;
   padding: 0;
@@ -1237,6 +1239,106 @@ fieldset {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.historyItemActions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.dialogBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(22, 32, 28, 0.42);
+}
+
+.confirmDialog {
+  display: grid;
+  width: min(100%, 460px);
+  gap: 18px;
+  padding: 20px;
+  border: 1px solid #d8dfda;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 24px 60px rgba(22, 32, 28, 0.24);
+}
+
+.confirmDialog h3 {
+  color: #24322d;
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.confirmDialog p {
+  margin-top: 8px;
+  color: #53615b;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.dialogActions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.resumeAnalysisItem {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #e1e7e2;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.resumeAnalysisItemHeader,
+.resumeAnalysisMeta,
+.resumeAnalysisTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.resumeAnalysisItemHeader {
+  justify-content: space-between;
+}
+
+.resumeAnalysisItemHeader strong {
+  color: #17211f;
+  overflow-wrap: anywhere;
+}
+
+.resumeAnalysisItemHeader span,
+.resumeAnalysisMeta {
+  color: #62706a;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.resumeAnalysisItem p {
+  color: #45524d;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.resumeAnalysisTags span {
+  max-width: 100%;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #eef6f2;
+  color: #174f47;
+  font-size: 12px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .trendHeading {
@@ -1366,8 +1468,10 @@ fieldset {
     grid-column: span 1;
   }
 
-  .resumeActions {
+  .resumeActions,
+  .historyItemActions {
     flex-wrap: wrap;
+    justify-content: flex-start;
   }
 
   .rightRail {

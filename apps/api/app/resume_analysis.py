@@ -73,6 +73,17 @@ class InterviewRecord:
     include_hr_round: bool = False
 
 
+@dataclass(frozen=True)
+class ResumeAnalysisRecord:
+    id: int
+    resume_markdown: str
+    target_role: str
+    analysis: ResumeAnalysis
+    created_at: str
+    last_used_at: str
+    use_count: int
+
+
 def _unwrap_analysis_payload(data: object) -> object:
     if not isinstance(data, dict):
         return data
@@ -160,6 +171,79 @@ def initialize_resume_analysis_schema() -> None:
             "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
             ("0006_interview_include_hr",),
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS resume_analysis_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                resume_markdown TEXT NOT NULL,
+                target_role TEXT NOT NULL DEFAULT '',
+                analysis_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                use_count INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
+            ("0007_resume_analysis_records",),
+        )
+
+
+def _record_from_row(row: sqlite3.Row) -> ResumeAnalysisRecord:
+    return ResumeAnalysisRecord(
+        id=int(row["id"]),
+        resume_markdown=str(row["resume_markdown"]),
+        target_role=str(row["target_role"]),
+        analysis=validate_resume_analysis(json.loads(str(row["analysis_json"]))),
+        created_at=str(row["created_at"]),
+        last_used_at=str(row["last_used_at"]),
+        use_count=int(row["use_count"]),
+    )
+
+
+def save_resume_analysis_record(
+    *,
+    resume_markdown: str,
+    target_role: str,
+    analysis: ResumeAnalysis,
+) -> ResumeAnalysisRecord:
+    initialize_resume_analysis_schema()
+    with connect() as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO resume_analysis_records (resume_markdown, target_role, analysis_json)
+            VALUES (?, ?, ?)
+            """,
+            (resume_markdown, target_role, analysis.model_dump_json()),
+        )
+        record_id = int(cursor.lastrowid)
+        row = connection.execute(
+            """
+            SELECT id, resume_markdown, target_role, analysis_json, created_at, last_used_at, use_count
+            FROM resume_analysis_records
+            WHERE id = ?
+            """,
+            (record_id,),
+        ).fetchone()
+
+    if row is None:
+        raise RuntimeError("简历分析记录保存失败")
+    return _record_from_row(row)
+
+
+def list_resume_analysis_records() -> list[ResumeAnalysisRecord]:
+    initialize_resume_analysis_schema()
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, resume_markdown, target_role, analysis_json, created_at, last_used_at, use_count
+            FROM resume_analysis_records
+            ORDER BY id DESC
+            """
+        ).fetchall()
+
+    return [_record_from_row(row) for row in rows]
 
 
 def save_interview(

@@ -8,11 +8,12 @@ from apps.api.app.interview_review import (
     ABILITY_DIMENSIONS,
     InterviewReview,
     list_completed_interview_history,
+    read_completed_interview_by_session,
     save_completed_interview,
 )
-from apps.api.app.interview_session import InterviewSession, TranscriptMessage, save_session
+from apps.api.app.interview_session import InterviewSession, TranscriptMessage, read_session, save_session
 from apps.api.app.main import app
-from apps.api.app.resume_analysis import ResumeAnalysis, save_interview
+from apps.api.app.resume_analysis import ResumeAnalysis, read_interview, save_interview
 
 
 VALID_ANALYSIS = ResumeAnalysis(
@@ -46,16 +47,22 @@ def _review(score: int) -> InterviewReview:
     )
 
 
-def _interview(target_role: str) -> int:
+def _interview(target_role: str, *, interview_mode: str = "single_round") -> int:
     return save_interview(
         resume_markdown="# 张三\n\n## 项目经历\n- Mock Interview",
         target_role=target_role,
-        interview_mode="single_round",
+        interview_mode=interview_mode,
         analysis=VALID_ANALYSIS,
     ).id
 
 
-def _session(*, interview_id: int, status: str, answer: str) -> InterviewSession:
+def _session(
+    *,
+    interview_id: int,
+    status: str,
+    answer: str,
+    round_kind: str = "single_round",
+) -> InterviewSession:
     return save_session(
         InterviewSession(
             id=0,
@@ -77,6 +84,7 @@ def _session(*, interview_id: int, status: str, answer: str) -> InterviewSession
             ],
             main_question_count=1,
             current_main_question_follow_ups=0,
+            round_kind=round_kind,
         )
     )
 
@@ -146,3 +154,91 @@ def test_history_api_returns_records_target_roles_and_six_dimension_trends(
     assert filtered.status_code == 200
     assert [record["targetRole"] for record in filtered.json()["records"]] == ["前端工程师"]
     assert filtered.json()["trends"][0]["points"][0]["score"] == 3
+
+
+def test_delete_completed_history_record_removes_review_transcript_and_rebuilds_trends(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock.sqlite3"))
+    older_completed, newer_completed, _ = _seed_history()
+    deleted_record = read_completed_interview_by_session(older_completed.id)
+    assert deleted_record is not None
+
+    with TestClient(app) as client:
+        response = client.delete(f"/history/{deleted_record.id}")
+        history_response = client.get("/history")
+        deleted_session_response = client.get(f"/interview-sessions/{older_completed.id}")
+
+    assert response.status_code == 204, response.text
+    assert deleted_session_response.status_code == 404
+    assert deleted_session_response.json() == {"detail": "已完成面试记录不存在"}
+    assert read_completed_interview_by_session(older_completed.id) is None
+    scrubbed_session = read_session(older_completed.id)
+    assert scrubbed_session is not None
+    assert scrubbed_session.status == "ended"
+    assert scrubbed_session.transcript == []
+    assert read_interview(older_completed.interview_id) is not None
+
+    assert history_response.status_code == 200
+    body = history_response.json()
+    assert [record["sessionId"] for record in body["records"]] == [newer_completed.id]
+    assert body["trends"][0]["points"] == [
+        {
+            "historyRecordId": body["records"][0]["id"],
+            "completedAt": body["records"][0]["completedAt"],
+            "score": 5,
+        }
+    ]
+    assert body["trends"][0]["averageScore"] == 5
+
+
+def test_delete_one_multi_round_completed_history_record_keeps_other_rounds(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock.sqlite3"))
+    interview_id = _interview("前端工程师", interview_mode="multi_round")
+    peer_round = _session(
+        interview_id=interview_id,
+        status="ended",
+        answer="我负责同事技术面。",
+        round_kind="peer_technical",
+    )
+    senior_round = _session(
+        interview_id=interview_id,
+        status="ended",
+        answer="我负责资深技术面。",
+        round_kind="senior_technical",
+    )
+    save_completed_interview(peer_round, _review(2))
+    save_completed_interview(senior_round, _review(4))
+    peer_record = read_completed_interview_by_session(peer_round.id)
+    senior_record = read_completed_interview_by_session(senior_round.id)
+    assert peer_record is not None
+    assert senior_record is not None
+
+    with TestClient(app) as client:
+        response = client.delete(f"/history/{peer_record.id}")
+        history_response = client.get("/history")
+
+    assert response.status_code == 204, response.text
+    assert read_completed_interview_by_session(peer_round.id) is None
+    assert read_completed_interview_by_session(senior_round.id) is not None
+    body = history_response.json()
+    assert [record["sessionId"] for record in body["records"]] == [senior_round.id]
+    assert body["records"][0]["roundKind"] == "senior_technical"
+    assert body["trends"][0]["points"][0]["score"] == 4
+
+
+def test_delete_completed_history_record_returns_404_for_missing_record(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock.sqlite3"))
+
+    with TestClient(app) as client:
+        response = client.delete("/history/999")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "已完成面试记录不存在"}

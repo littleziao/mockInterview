@@ -354,6 +354,37 @@ def read_completed_interview_by_session(session_id: int) -> CompletedInterviewRe
     )
 
 
+def delete_completed_interview_history_record(record_id: int) -> bool:
+    initialize_interview_review_schema()
+    with connect() as connection:
+        row: sqlite3.Row | None = connection.execute(
+            """
+            SELECT session_id
+            FROM completed_interviews
+            WHERE id = ?
+            """,
+            (record_id,),
+        ).fetchone()
+        if row is None:
+            return False
+
+        session_id = int(row["session_id"])
+        connection.execute(
+            "DELETE FROM completed_interviews WHERE id = ?",
+            (record_id,),
+        )
+        connection.execute(
+            """
+            UPDATE interview_sessions
+            SET transcript_json = '[]', updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (session_id,),
+        )
+
+    return True
+
+
 def _build_history_record_from_row(row: sqlite3.Row) -> CompletedInterviewHistoryRecord:
     transcript = [
         TranscriptMessage.model_validate(item)

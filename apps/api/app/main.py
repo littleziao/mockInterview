@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -27,8 +27,11 @@ from .resume_analysis import (
     InterviewRecord,
     ResumeAnalysis,
     ResumeAnalysisValidationError,
+    ResumeAnalysisRecord,
     initialize_resume_analysis_schema,
+    list_resume_analysis_records,
     read_interview,
+    save_resume_analysis_record,
     save_interview,
 )
 from .interview_session import (
@@ -57,6 +60,7 @@ from .interview_review import (
     CompletedInterviewHistoryRecord,
     InterviewReview,
     InterviewReviewValidationError,
+    delete_completed_interview_history_record,
     initialize_interview_review_schema,
     list_completed_interview_history,
     list_completed_target_roles,
@@ -135,6 +139,22 @@ class GenerateResumeAnalysisPayload(BaseModel):
     target_role: str = Field(default="", alias="targetRole")
 
 
+class ResumeAnalysisRecordListItemPayload(BaseModel):
+    id: int
+    target_role: str = Field(serialization_alias="targetRole")
+    summary: str
+    key_projects: list[str] = Field(serialization_alias="keyProjects")
+    technical_stack: list[str] = Field(serialization_alias="technicalStack")
+    follow_up_topics: list[str] = Field(serialization_alias="followUpTopics")
+    created_at: str = Field(serialization_alias="createdAt")
+    last_used_at: str = Field(serialization_alias="lastUsedAt")
+    use_count: int = Field(serialization_alias="useCount")
+
+
+class ResumeAnalysisRecordsPayload(BaseModel):
+    records: list[ResumeAnalysisRecordListItemPayload]
+
+
 class ConfirmInterviewPayload(BaseModel):
     resume_markdown: str = Field(alias="resumeMarkdown")
     target_role: str = Field(default="", alias="targetRole")
@@ -191,6 +211,22 @@ def _to_resume_analysis_payload(analysis: ResumeAnalysis) -> ResumeAnalysisPaylo
         target_role_notes=analysis.target_role_notes,
         focus_topics=analysis.focus_topics,
         low_priority_follow_up_topics=analysis.low_priority_follow_up_topics,
+    )
+
+
+def _to_resume_analysis_record_list_item_payload(
+    record: ResumeAnalysisRecord,
+) -> ResumeAnalysisRecordListItemPayload:
+    return ResumeAnalysisRecordListItemPayload(
+        id=record.id,
+        target_role=record.target_role,
+        summary=record.analysis.background_summary,
+        key_projects=record.analysis.key_projects,
+        technical_stack=record.analysis.technical_stack,
+        follow_up_topics=record.analysis.follow_up_topics,
+        created_at=record.created_at,
+        last_used_at=record.last_used_at,
+        use_count=record.use_count,
     )
 
 
@@ -257,7 +293,23 @@ def post_resume_analysis(payload: GenerateResumeAnalysisPayload) -> ResumeAnalys
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
+    save_resume_analysis_record(
+        resume_markdown=resume_markdown,
+        target_role=payload.target_role.strip(),
+        analysis=analysis,
+    )
+
     return _to_resume_analysis_payload(analysis)
+
+
+@app.get("/resume-analysis-records", response_model=ResumeAnalysisRecordsPayload)
+def get_resume_analysis_records() -> ResumeAnalysisRecordsPayload:
+    return ResumeAnalysisRecordsPayload(
+        records=[
+            _to_resume_analysis_record_list_item_payload(record)
+            for record in list_resume_analysis_records()
+        ],
+    )
 
 
 @app.post("/interviews", response_model=InterviewPayload)
@@ -687,11 +739,21 @@ def get_history(target_role: str = "") -> HistoryPayload:
     )
 
 
+@app.delete("/history/{history_record_id}", status_code=204)
+def delete_history_record(history_record_id: int) -> Response:
+    deleted = delete_completed_interview_history_record(history_record_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="已完成面试记录不存在")
+    return Response(status_code=204)
+
+
 @app.get("/interview-sessions/{session_id}", response_model=InterviewSessionPayload)
 def get_interview_session(session_id: int) -> InterviewSessionPayload:
     session = read_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="进行中面试不存在")
+    if session.status == "ended" and read_completed_interview_by_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="已完成面试记录不存在")
     return _to_session_payload(session)
 
 

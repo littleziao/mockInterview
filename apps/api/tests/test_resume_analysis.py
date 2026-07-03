@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from apps.api.app.main import app
-from apps.api.app.resume_analysis import validate_resume_analysis
+from apps.api.app.resume_analysis import list_resume_analysis_records, validate_resume_analysis
 
 
 def _configure_provider(client: TestClient, base_url: str = "fake://success") -> None:
@@ -112,3 +112,62 @@ def test_user_edits_confirms_and_reads_saved_resume_analysis(monkeypatch, tmp_pa
     assert read_response.json()["interviewMode"] == "multi_round"
     assert read_response.json()["analysis"]["focusTopics"] == ["状态管理表达", "项目复盘"]
     assert read_response.json()["analysis"]["lowPriorityFollowUpTopics"] == ["弱相关外包经历"]
+
+
+def test_successful_resume_analysis_generation_creates_history_record(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        response = client.post(
+            "/resume-analyses/generate",
+            json={
+                "resumeMarkdown": "# 张三\n\n## 项目经历\n- Mock Interview",
+                "targetRole": "前端工程师",
+            },
+        )
+
+    records = list_resume_analysis_records()
+
+    assert response.status_code == 200
+    assert len(records) == 1
+    record = records[0]
+    assert record.resume_markdown == "# 张三\n\n## 项目经历\n- Mock Interview"
+    assert record.target_role == "前端工程师"
+    assert record.analysis.background_summary == "张三 具备项目交付和工程实现经验。"
+    assert record.created_at
+    assert record.last_used_at == record.created_at
+    assert record.use_count == 0
+
+
+def test_repeated_resume_analysis_generation_creates_independent_records(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        for _ in range(2):
+            response = client.post(
+                "/resume-analyses/generate",
+                json={
+                    "resumeMarkdown": "# 张三\n\n## 项目经历\n- Mock Interview",
+                    "targetRole": "前端工程师",
+                },
+            )
+            assert response.status_code == 200
+
+        list_response = client.get("/resume-analysis-records")
+
+    assert list_response.status_code == 200
+    body = list_response.json()
+    assert [record["targetRole"] for record in body["records"]] == ["前端工程师", "前端工程师"]
+    assert body["records"][0]["id"] != body["records"][1]["id"]
+    assert body["records"][0]["summary"] == "张三 具备项目交付和工程实现经验。"
+    assert body["records"][0]["createdAt"]
+    assert body["records"][0]["lastUsedAt"] == body["records"][0]["createdAt"]
+    assert body["records"][0]["useCount"] == 0
+    assert "resumeMarkdown" not in body["records"][0]
+    assert body["records"][0]["keyProjects"] == ["基于 Markdown 简历识别出的核心项目"]
+    assert body["records"][0]["technicalStack"] == ["TypeScript", "React", "FastAPI", "SQLite"]
+    assert body["records"][0]["followUpTopics"] == ["项目职责边界", "技术选型取舍", "复杂问题排查"]
