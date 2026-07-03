@@ -6,6 +6,7 @@ from apps.api.app.main import app
 from apps.api.app.resume_analysis import (
     list_resume_analysis_records,
     read_interview,
+    read_resume_analysis_record,
     validate_resume_analysis,
 )
 
@@ -253,3 +254,99 @@ def test_confirming_interview_from_resume_analysis_record_updates_confirmed_vers
     assert refreshed_record.analysis.background_summary == "用户确认后的背景摘要"
     assert refreshed_record.use_count == 1
     assert refreshed_record.last_used_at >= source_record.last_used_at
+
+
+def test_delete_resume_analysis_record_removes_it_from_history(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        client.post(
+            "/resume-analyses/generate",
+            json={
+                "resumeMarkdown": "# 张三\n\n## 项目经历\n- Mock Interview",
+                "targetRole": "前端工程师",
+            },
+        )
+        record_id = list_resume_analysis_records()[0].id
+
+        delete_response = client.delete(f"/resume-analysis-records/{record_id}")
+        list_response = client.get("/resume-analysis-records")
+        detail_response = client.get(f"/resume-analysis-records/{record_id}")
+
+    assert delete_response.status_code == 204, delete_response.text
+    assert list_response.status_code == 200
+    assert list_response.json() == {"records": []}
+    assert detail_response.status_code == 404
+    assert detail_response.json() == {"detail": "简历分析记录不存在"}
+    assert read_resume_analysis_record(record_id) is None
+
+
+def test_delete_resume_analysis_record_returns_404_for_missing_record(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        response = client.delete("/resume-analysis-records/999")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "简历分析记录不存在"}
+
+
+def test_deleting_resume_analysis_record_keeps_linked_interview_usable(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        client.post(
+            "/resume-analyses/generate",
+            json={
+                "resumeMarkdown": "# 初始简历\n\n- Mock Interview",
+                "targetRole": "前端工程师",
+            },
+        )
+        source_record = list_resume_analysis_records()[0]
+
+        confirm_response = client.post(
+            "/interviews",
+            json={
+                "resumeMarkdown": "# 确认版简历\n\n- Mock Interview\n- 指标补充",
+                "targetRole": "资深前端工程师",
+                "interviewMode": "single_round",
+                "sourceResumeAnalysisRecordId": source_record.id,
+                "analysis": {
+                    "background_summary": "用户确认后的背景摘要",
+                    "key_projects": ["Mock Interview", "AI Provider 设置"],
+                    "technical_stack": ["React", "FastAPI"],
+                    "follow_up_topics": ["项目职责", "技术取舍"],
+                    "risk_points": ["指标需要量化"],
+                    "unclear_points": [],
+                    "target_role_notes": "偏资深前端岗位",
+                    "focus_topics": ["架构取舍"],
+                    "low_priority_follow_up_topics": ["弱相关经历"],
+                },
+            },
+        )
+        interview_id = confirm_response.json()["id"]
+
+        # 来源简历分析记录被删除：面试记录本身仍可读、可继续、可复盘，
+        # 关联只用于追溯，不被简历分析记录的生命周期控制。
+        delete_response = client.delete(f"/resume-analysis-records/{source_record.id}")
+        interview_after_delete = client.get(f"/interviews/{interview_id}")
+        history_after_delete = client.get("/resume-analysis-records")
+
+    assert delete_response.status_code == 204, delete_response.text
+    assert confirm_response.status_code == 200
+    assert interview_after_delete.status_code == 200
+    assert interview_after_delete.json()["id"] == interview_id
+    # 追溯关联保留为原 id（悬空引用无害），面试生命周期不受影响。
+    assert interview_after_delete.json()["sourceResumeAnalysisRecordId"] == source_record.id
+    assert history_after_delete.json() == {"records": []}
+    assert read_interview(interview_id) is not None
+    assert read_interview(interview_id).source_resume_analysis_record_id == source_record.id

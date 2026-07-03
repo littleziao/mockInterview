@@ -270,6 +270,29 @@ def read_resume_analysis_record(record_id: int) -> ResumeAnalysisRecord | None:
     return _record_from_row(row) if row is not None else None
 
 
+def delete_resume_analysis_record(record_id: int) -> bool:
+    """删除单条简历分析记录。
+
+    该操作只影响简历分析历史，不级联删除面试、复盘或趋势数据。
+    面试记录中保留的来源简历分析记录引用为悬空引用，仅用于追溯，不影响面试生命周期。
+    """
+    initialize_resume_analysis_schema()
+    with connect() as connection:
+        existing = connection.execute(
+            "SELECT id FROM resume_analysis_records WHERE id = ?",
+            (record_id,),
+        ).fetchone()
+        if existing is None:
+            return False
+
+        connection.execute(
+            "DELETE FROM resume_analysis_records WHERE id = ?",
+            (record_id,),
+        )
+
+    return True
+
+
 def save_interview(
     *,
     resume_markdown: str,

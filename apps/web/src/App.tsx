@@ -2414,13 +2414,147 @@ function ResumableInterviews({
   );
 }
 
+function ResumeAnalysisDetail({
+  detail,
+  loading,
+  error
+}: {
+  detail: ResumeAnalysisRecordDetail | null;
+  loading: boolean;
+  error: string;
+}) {
+  if (loading) {
+    return <div className="resumeAnalysisDetailStatus">正在读取完整简历分析</div>;
+  }
+  if (error) {
+    return <div className="resumeAnalysisDetailStatus failure">{error}</div>;
+  }
+  if (!detail) {
+    return null;
+  }
+  const analysis = detail.analysis;
+  return (
+    <div className="resumeAnalysisDetail" aria-label="简历分析记录详情">
+      <section className="resumeAnalysisDetailBlock" aria-labelledby="resume-detail-resume-title">
+        <h3 id="resume-detail-resume-title">完整 Markdown 简历</h3>
+        <pre className="resumeMarkdownPre">{detail.resumeMarkdown}</pre>
+      </section>
+      <section className="resumeAnalysisDetailBlock" aria-labelledby="resume-detail-analysis-title">
+        <h3 id="resume-detail-analysis-title">完整结构化简历分析</h3>
+        <div className="resumeAnalysisDetailField">
+          <span>背景摘要</span>
+          <p>{analysis.backgroundSummary}</p>
+        </div>
+        <div className="resumeAnalysisDetailField">
+          <span>关键项目</span>
+          <p>{analysis.keyProjects.join("、")}</p>
+        </div>
+        <div className="resumeAnalysisDetailField">
+          <span>技术栈</span>
+          <p>{analysis.technicalStack.join("、")}</p>
+        </div>
+        <div className="resumeAnalysisDetailField">
+          <span>可能追问点</span>
+          <p>{analysis.followUpTopics.join("、")}</p>
+        </div>
+        {analysis.riskPoints.length > 0 ? (
+          <div className="resumeAnalysisDetailField">
+            <span>风险点</span>
+            <p>{analysis.riskPoints.join("、")}</p>
+          </div>
+        ) : null}
+        {analysis.unclearPoints.length > 0 ? (
+          <div className="resumeAnalysisDetailField">
+            <span>表达不清之处</span>
+            <p>{analysis.unclearPoints.join("、")}</p>
+          </div>
+        ) : null}
+        {analysis.targetRoleNotes ? (
+          <div className="resumeAnalysisDetailField">
+            <span>目标岗位补充说明</span>
+            <p>{analysis.targetRoleNotes}</p>
+          </div>
+        ) : null}
+        {analysis.focusTopics.length > 0 ? (
+          <div className="resumeAnalysisDetailField">
+            <span>希望重点练习的内容</span>
+            <p>{analysis.focusTopics.join("、")}</p>
+          </div>
+        ) : null}
+        {analysis.lowPriorityFollowUpTopics.length > 0 ? (
+          <div className="resumeAnalysisDetailField">
+            <span>不希望重点追问的内容</span>
+            <p>{analysis.lowPriorityFollowUpTopics.join("、")}</p>
+          </div>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
 function ResumeAnalysisHistory({
+  onDeleteRecord,
   onUseRecord,
   records
 }: {
+  onDeleteRecord: (recordId: number) => Promise<void> | void;
   onUseRecord: (recordId: number) => Promise<void> | void;
   records: ResumeAnalysisRecord[];
 }) {
+  const [expandedRecordId, setExpandedRecordId] = useState<number | null>(null);
+  const [detail, setDetail] = useState<ResumeAnalysisRecordDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const [pendingDeleteRecord, setPendingDeleteRecord] = useState<ResumeAnalysisRecord | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+
+  async function toggleDetail(record: ResumeAnalysisRecord) {
+    if (expandedRecordId === record.id) {
+      setExpandedRecordId(null);
+      setDetail(null);
+      setDetailError("");
+      return;
+    }
+
+    setExpandedRecordId(record.id);
+    setDetail(null);
+    setDetailError("");
+    setDetailLoading(true);
+    try {
+      const response = await fetch(`${apiBaseUrl}/resume-analysis-records/${record.id}`);
+      if (!response.ok) {
+        throw new Error("载入简历分析记录失败");
+      }
+      setDetail((await response.json()) as ResumeAnalysisRecordDetail);
+    } catch (error) {
+      setDetailError(error instanceof Error ? error.message : "载入简历分析记录失败");
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  async function confirmDelete() {
+    if (!pendingDeleteRecord) {
+      return;
+    }
+    setIsDeleting(true);
+    setDeleteError("");
+    try {
+      await onDeleteRecord(pendingDeleteRecord.id);
+      const deletedId = pendingDeleteRecord.id;
+      setPendingDeleteRecord(null);
+      if (expandedRecordId === deletedId) {
+        setExpandedRecordId(null);
+        setDetail(null);
+      }
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "删除简历分析记录失败");
+    } finally {
+      setIsDeleting(false);
+    }
+  }
+
   return (
     <section className="panel homeResumeAnalysisPanel" aria-labelledby="resume-analysis-history-title">
       <div className="sectionHeader">
@@ -2457,14 +2591,72 @@ function ResumeAnalysisHistory({
                 ))}
               </div>
               <div className="resumeAnalysisActions">
+                <button
+                  aria-expanded={expandedRecordId === record.id}
+                  className="secondaryButton"
+                  onClick={() => void toggleDetail(record)}
+                  type="button"
+                >
+                  <Eye size={16} aria-hidden="true" />
+                  {expandedRecordId === record.id ? "收起详情" : "查看详情"}
+                </button>
+                <button
+                  aria-label={`删除${record.targetRole || "由简历推断"}简历分析记录`}
+                  className="dangerButton"
+                  onClick={() => {
+                    setDeleteError("");
+                    setPendingDeleteRecord(record);
+                  }}
+                  type="button"
+                >
+                  <Trash2 size={16} aria-hidden="true" />
+                  删除
+                </button>
                 <button className="primaryButton" onClick={() => void onUseRecord(record.id)} type="button">
                   用于面试
                 </button>
               </div>
+              {expandedRecordId === record.id ? (
+                <ResumeAnalysisDetail detail={detail} error={detailError} loading={detailLoading} />
+              ) : null}
             </li>
           ))}
         </ul>
       )}
+
+      {pendingDeleteRecord ? (
+        <div className="dialogBackdrop" role="presentation">
+          <div
+            aria-labelledby="delete-resume-analysis-title"
+            aria-modal="true"
+            className="confirmDialog"
+            role="dialog"
+          >
+            <div>
+              <h3 id="delete-resume-analysis-title">删除简历分析记录</h3>
+              <p>
+                确认后会从简历分析历史中永久移除这条记录。该操作只影响简历分析历史，
+                不会影响已开始或已完成的面试、复盘和长期趋势数据。
+              </p>
+            </div>
+            {deleteError ? <div className="workflowMessage failure">{deleteError}</div> : null}
+            <div className="dialogActions">
+              <button
+                className="secondaryButton"
+                disabled={isDeleting}
+                onClick={() => setPendingDeleteRecord(null)}
+                type="button"
+              >
+                取消
+              </button>
+              <button className="dangerButton" disabled={isDeleting} onClick={() => void confirmDelete()} type="button">
+                <Trash2 size={16} aria-hidden="true" />
+                确认删除
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -2571,6 +2763,23 @@ export function App() {
     }
   }
 
+  async function deleteResumeAnalysisRecord(recordId: number) {
+    setResumeError("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/resume-analysis-records/${recordId}`, {
+        method: "DELETE"
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(payload?.detail || "删除简历分析记录失败");
+      }
+      await loadResumeAnalysisRecords();
+    } catch (error) {
+      setResumeError(error instanceof Error ? error.message : "删除简历分析记录失败");
+      throw error;
+    }
+  }
+
   async function abandonInterview(sessionId: number) {
     setResumeError("");
     try {
@@ -2630,7 +2839,11 @@ export function App() {
                   onResume={resumeInterview}
                   sessions={inProgressSessions}
                 />
-                <ResumeAnalysisHistory onUseRecord={useResumeAnalysisRecord} records={resumeAnalysisRecords} />
+                <ResumeAnalysisHistory
+                  onDeleteRecord={deleteResumeAnalysisRecord}
+                  onUseRecord={useResumeAnalysisRecord}
+                  records={resumeAnalysisRecords}
+                />
               </>
             ) : null}
             {resumeError && route === "home" ? (

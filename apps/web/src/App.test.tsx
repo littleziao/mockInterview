@@ -152,6 +152,7 @@ const historyPayloadMock = {
 };
 
 let deletedHistoryRecordIds: number[] = [];
+let deletedResumeAnalysisRecordIds: number[] = [];
 
 // 服务端对一次回答的权威响应：transcript 同时包含用户刚提交的回答与面试官的新消息。
 // 乐观渲染测试用它作为「整体替换」的目标数据。
@@ -188,6 +189,7 @@ describe("App", () => {
     resumeAnalysisRecordsMock = [];
     answersHandlerOverride = null;
     deletedHistoryRecordIds = [];
+    deletedResumeAnalysisRecordIds = [];
     window.location.hash = "#/";
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
@@ -208,16 +210,29 @@ describe("App", () => {
         }
 
         if (url.endsWith("/resume-analysis-records") && !init) {
-          return Response.json({ records: resumeAnalysisRecordsMock });
+          return Response.json({
+            records: resumeAnalysisRecordsMock.filter(
+              (record) => !deletedResumeAnalysisRecordIds.includes(record.id)
+            )
+          });
         }
 
         if (url.match(/\/resume-analysis-records\/\d+$/) && !init) {
           const recordId = Number(url.split("/").at(-1));
+          if (deletedResumeAnalysisRecordIds.includes(recordId)) {
+            return Response.json({}, { status: 404 });
+          }
           const record = resumeAnalysisRecordsMock.find((item) => item.id === recordId);
           if (!record) {
             return Response.json({}, { status: 404 });
           }
           return Response.json(record);
+        }
+
+        if (url.match(/\/resume-analysis-records\/\d+$/) && init?.method === "DELETE") {
+          const deletedRecordId = Number(url.split("/").at(-1));
+          deletedResumeAnalysisRecordIds.push(deletedRecordId);
+          return new Response(null, { status: 204 });
         }
 
         if (url.match(/\/history\/\d+$/) && init?.method === "DELETE") {
@@ -893,6 +908,102 @@ describe("App", () => {
     );
     expect(await screen.findByRole("heading", { name: "开始面试" })).toBeInTheDocument();
     expect(screen.getByText("先做个自我介绍吧。")).toBeInTheDocument();
+  });
+
+  it("可在首页简历分析历史展开详情查看完整 Markdown 简历和结构化分析", async () => {
+    resumeAnalysisRecordsMock = [
+      {
+        id: 42,
+        targetRole: "前端工程师",
+        summary: "历史背景摘要",
+        resumeMarkdown: "# 历史简历\n\n## 项目经历\n- 历史项目",
+        analysis: {
+          backgroundSummary: "完整背景摘要",
+          keyProjects: ["历史项目"],
+          technicalStack: ["React", "TypeScript"],
+          followUpTopics: ["历史追问"],
+          riskPoints: ["历史风险"],
+          unclearPoints: ["历史不清"],
+          targetRoleNotes: "历史岗位说明",
+          focusTopics: ["历史重点"],
+          lowPriorityFollowUpTopics: ["历史低优先级"]
+        },
+        keyProjects: ["历史项目"],
+        technicalStack: ["React", "TypeScript"],
+        followUpTopics: ["历史追问"],
+        createdAt: "2026-07-03 09:00:00",
+        lastUsedAt: "2026-07-03 09:00:00",
+        useCount: 0
+      }
+    ];
+    const user = userEvent.setup();
+    render(<App />);
+
+    const historyList = await screen.findByLabelText("简历分析历史列表");
+    await user.click(within(historyList).getByRole("button", { name: "查看详情" }));
+
+    const detail = await screen.findByLabelText("简历分析记录详情");
+    expect(detail).toHaveTextContent("# 历史简历");
+    expect(detail).toHaveTextContent("完整背景摘要");
+    expect(detail).toHaveTextContent("历史项目");
+    expect(detail).toHaveTextContent("React");
+    expect(detail).toHaveTextContent("历史风险");
+    expect(detail).toHaveTextContent("历史低优先级");
+    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/resume-analysis-records/42");
+
+    await user.click(screen.getByRole("button", { name: "收起详情" }));
+    expect(screen.queryByLabelText("简历分析记录详情")).not.toBeInTheDocument();
+  });
+
+  it("删除简历分析记录经二次确认后从列表移除且不影响历史面试", async () => {
+    resumeAnalysisRecordsMock = [
+      {
+        id: 42,
+        targetRole: "前端工程师",
+        summary: "历史背景摘要",
+        resumeMarkdown: "# 历史简历\n\n- 历史项目",
+        analysis: {
+          backgroundSummary: "历史背景摘要",
+          keyProjects: ["历史项目"],
+          technicalStack: ["React"],
+          followUpTopics: ["历史追问"],
+          riskPoints: [],
+          unclearPoints: [],
+          targetRoleNotes: "",
+          focusTopics: [],
+          lowPriorityFollowUpTopics: []
+        },
+        keyProjects: ["历史项目"],
+        technicalStack: ["React"],
+        followUpTopics: ["历史追问"],
+        createdAt: "2026-07-03 09:00:00",
+        lastUsedAt: "2026-07-03 09:00:00",
+        useCount: 0
+      }
+    ];
+    const user = userEvent.setup();
+    render(<App />);
+
+    const historyList = await screen.findByLabelText("简历分析历史列表");
+    await user.click(within(historyList).getByRole("button", { name: "删除前端工程师简历分析记录" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "删除简历分析记录" });
+    expect(dialog).toHaveTextContent("不会影响已开始或已完成的面试");
+    await user.click(within(dialog).getByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        "http://127.0.0.1:8000/resume-analysis-records/42",
+        expect.objectContaining({ method: "DELETE" })
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByText("暂无简历分析记录，解析成功后会出现在这里。")).toBeInTheDocument();
+    });
+
+    // 删除简历分析记录不影响历史与趋势页的面试记录。
+    await user.click(screen.getByRole("button", { name: "历史与趋势" }));
+    expect(await screen.findByLabelText("已完成面试记录列表")).toHaveTextContent("后端工程师");
   });
 
   it("上传页可选择历史简历分析并进入确认页", async () => {

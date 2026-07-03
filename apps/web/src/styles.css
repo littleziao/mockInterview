@@ -1379,6 +1379,75 @@ fieldset {
   justify-content: flex-end;
 }
 
+.resumeAnalysisActions button {
+  flex: 0 0 auto;
+}
+
+.resumeAnalysisDetailStatus {
+  color: #53615b;
+  font-size: 13px;
+}
+
+.resumeAnalysisDetailStatus.failure {
+  color: #8a2f2f;
+}
+
+.resumeAnalysisDetail {
+  display: grid;
+  gap: 14px;
+  padding: 12px;
+  border: 1px solid #e1e7e2;
+  border-radius: 8px;
+  background: #f7faf8;
+}
+
+.resumeAnalysisDetailBlock {
+  display: grid;
+  gap: 8px;
+}
+
+.resumeAnalysisDetailBlock h3 {
+  color: #24322d;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.resumeMarkdownPre {
+  margin: 0;
+  padding: 10px;
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid #e1e7e2;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #24322d;
+  font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.resumeAnalysisDetailField {
+  display: grid;
+  grid-template-columns: minmax(0, 130px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.resumeAnalysisDetailField span {
+  color: #62706a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.resumeAnalysisDetailField p {
+  color: #45524d;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
 .trendHeading {
   display: flex;
   gap: 8px;

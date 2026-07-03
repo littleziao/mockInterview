@@ -28,6 +28,7 @@ from .resume_analysis import (
     ResumeAnalysis,
     ResumeAnalysisValidationError,
     ResumeAnalysisRecord,
+    delete_resume_analysis_record,
     initialize_resume_analysis_schema,
     list_resume_analysis_records,
     read_resume_analysis_record,
@@ -361,6 +362,14 @@ def get_resume_analysis_record(record_id: int) -> ResumeAnalysisRecordPayload:
     if record is None:
         raise HTTPException(status_code=404, detail="简历分析记录不存在")
     return _to_resume_analysis_record_payload(record)
+
+
+@app.delete("/resume-analysis-records/{record_id}", status_code=204)
+def delete_resume_analysis_record_endpoint(record_id: int) -> Response:
+    deleted = delete_resume_analysis_record(record_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="简历分析记录不存在")
+    return Response(status_code=204)
 
 
 @app.post("/interviews", response_model=InterviewPayload)
