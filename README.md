@@ -7,8 +7,8 @@
 ### 依赖
 
 - Node.js 20+
-- Miniconda
-- Python 3.13（通过 Miniconda 环境运行）
+- uv
+- Python 3.13（由 uv 自动下载与管理）
 
 安装前端依赖：
 
@@ -16,11 +16,20 @@
 npm install
 ```
 
-后端依赖使用 Miniconda 环境安装。当前环境如果还没有依赖，可执行：
+后端依赖使用 uv 在项目根 `.venv` 中管理。首次运行如果还没有依赖，可执行：
 
 ```powershell
-conda run -n base python -m pip install -r apps/api/requirements.txt
+uv venv --python 3.13
+uv pip install -r apps/api/requirements.txt
 ```
+
+### 一键启动前后端
+
+```powershell
+npm run dev:all
+```
+
+使用 concurrently 同时启动前端（5173）与后端（8000），日志以 `[web]`/`[api]` 前缀区分，Ctrl+C 一次关闭两边。
 
 ### 启动前端
 
