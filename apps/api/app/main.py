@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .ai_provider import (
@@ -22,7 +24,8 @@ from .ai_settings import (
     save_ai_provider_store,
     to_public_store,
 )
-from .database import database_health, initialize_database
+from .database import database_health, get_database_settings, initialize_database
+from .logging_config import configure_logging
 from .resume_analysis import (
     InterviewRecord,
     ResumeAnalysis,
@@ -71,9 +74,19 @@ from .interview_review import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    configure_logging()
     initialize_interview_review_schema()
+    database_status = database_health()
+    logger.info(
+        "Mock Interview API 启动 database=%s migration=%s",
+        get_database_settings().path,
+        database_status.get("migration", "unknown"),
+    )
     yield
 
 
@@ -90,6 +103,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(HTTPException)
+async def log_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
+    """统一记录 HTTP 错误日志：5xx 记 ERROR，4xx 记 WARNING。
+
+    行为与 FastAPI 默认的 HTTPException 响应完全一致，仅额外补一条带 detail 的日志，
+    便于本地排错（access log 只有状态码，看不到原因）。
+    """
+    level = logging.ERROR if exc.status_code >= 500 else logging.WARNING
+    logger.log(
+        level,
+        "HTTP %s %s -> %s: %s",
+        request.method,
+        request.url.path,
+        exc.status_code,
+        exc.detail,
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None),
+    )
 
 
 class AIProviderPayload(BaseModel):

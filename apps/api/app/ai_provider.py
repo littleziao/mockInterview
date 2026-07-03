@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 import re
+import time
 from typing import Protocol
 
 import httpx
@@ -26,6 +28,9 @@ from .interview_review import (
     validate_interview_review,
 )
 from .resume_analysis import ResumeAnalysis, ResumeAnalysisValidationError, validate_resume_analysis
+
+
+logger = logging.getLogger(__name__)
 
 
 RESUME_ANALYSIS_JSON_EXAMPLE = {
@@ -124,6 +129,13 @@ def _raise_provider_http_error(response: httpx.Response, settings: AIProviderSet
         return
 
     detail = _extract_provider_error_detail(response)
+    logger.warning(
+        "AI HTTP 错误 status=%s model=%s endpoint=%s detail=%s",
+        response.status_code,
+        settings.model,
+        endpoint,
+        detail,
+    )
     raise AIProviderRequestError(
         f"模型服务返回错误（HTTP {response.status_code}，{_provider_context(settings, endpoint)}）：{detail}"
     )
@@ -289,6 +301,8 @@ class OpenAICompatibleProvider:
 
     def test_connection(self) -> ProviderTestResult:
         endpoint = self.settings.base_url.rstrip("/") + "/chat/completions"
+        started_at = time.perf_counter()
+        logger.debug("AI 请求 test_connection model=%s endpoint=%s", self.settings.model, endpoint)
         try:
             response = httpx.post(
                 endpoint,
@@ -304,15 +318,27 @@ class OpenAICompatibleProvider:
         except AIProviderRequestError as error:
             return ProviderTestResult(status="failure", message=str(error))
         except httpx.HTTPError as error:
+            logger.error(
+                "AI 调用失败(网络) test_connection model=%s endpoint=%s error=%s",
+                self.settings.model,
+                endpoint,
+                error,
+            )
             return ProviderTestResult(
                 status="failure",
                 message=_format_provider_transport_error(error, self.settings, endpoint),
             )
 
+        logger.info(
+            "AI 调用成功 test_connection 耗时=%.0fms",
+            (time.perf_counter() - started_at) * 1000,
+        )
         return ProviderTestResult(status="success", message="AI Provider 连接测试成功")
 
     def analyze_resume(self, *, resume_markdown: str, target_role: str) -> ResumeAnalysis:
         endpoint = self.settings.base_url.rstrip("/") + "/chat/completions"
+        started_at = time.perf_counter()
+        logger.debug("AI 请求 analyze_resume model=%s endpoint=%s", self.settings.model, endpoint)
         try:
             response = httpx.post(
                 endpoint,
@@ -352,12 +378,28 @@ class OpenAICompatibleProvider:
         except AIProviderRequestError:
             raise
         except httpx.HTTPError as error:
+            logger.error(
+                "AI 调用失败(网络) analyze_resume model=%s endpoint=%s error=%s",
+                self.settings.model,
+                endpoint,
+                error,
+            )
             raise AIProviderRequestError(
                 _format_provider_transport_error(error, self.settings, endpoint)
             ) from error
         except (KeyError, IndexError, TypeError, ValueError) as error:
+            logger.error(
+                "AI 调用失败(结构) analyze_resume model=%s endpoint=%s error=%s",
+                self.settings.model,
+                endpoint,
+                error,
+            )
             raise ResumeAnalysisValidationError("AI 返回的简历分析结构无效") from error
 
+        logger.info(
+            "AI 调用成功 analyze_resume 耗时=%.0fms",
+            (time.perf_counter() - started_at) * 1000,
+        )
         return validate_resume_analysis(_load_json_content(content))
 
     def generate_next_interviewer_action(
@@ -369,6 +411,13 @@ class OpenAICompatibleProvider:
         starting: bool,
     ) -> InterviewerAction:
         endpoint = self.settings.base_url.rstrip("/") + "/chat/completions"
+        started_at = time.perf_counter()
+        logger.debug(
+            "AI 请求 generate_next_interviewer_action model=%s endpoint=%s starting=%s",
+            self.settings.model,
+            endpoint,
+            starting,
+        )
         try:
             response = httpx.post(
                 endpoint,
@@ -401,17 +450,35 @@ class OpenAICompatibleProvider:
             _raise_provider_http_error(response, self.settings, endpoint)
             payload = response.json()
             content = payload["choices"][0]["message"]["content"]
-            return validate_interviewer_action(_load_json_content(content))
+            result = validate_interviewer_action(_load_json_content(content))
         except AIProviderRequestError:
             raise
         except httpx.HTTPError as error:
+            logger.error(
+                "AI 调用失败(网络) generate_next_interviewer_action model=%s endpoint=%s error=%s",
+                self.settings.model,
+                endpoint,
+                error,
+            )
             raise AIProviderRequestError(
                 _format_provider_transport_error(error, self.settings, endpoint)
             ) from error
         except (KeyError, IndexError, TypeError, ValueError) as error:
+            logger.error(
+                "AI 调用失败(结构) generate_next_interviewer_action model=%s endpoint=%s error=%s",
+                self.settings.model,
+                endpoint,
+                error,
+            )
             raise InterviewerActionValidationError("AI 返回的面试官动作结构无效") from error
         except ResumeAnalysisValidationError as error:
             raise InterviewerActionValidationError("AI 返回的面试官动作结构无效") from error
+
+        logger.info(
+            "AI 调用成功 generate_next_interviewer_action 耗时=%.0fms",
+            (time.perf_counter() - started_at) * 1000,
+        )
+        return result
 
     def generate_interview_review(
         self,
@@ -421,6 +488,12 @@ class OpenAICompatibleProvider:
         target_role: str,
     ) -> InterviewReview:
         endpoint = self.settings.base_url.rstrip("/") + "/chat/completions"
+        started_at = time.perf_counter()
+        logger.debug(
+            "AI 请求 generate_interview_review model=%s endpoint=%s",
+            self.settings.model,
+            endpoint,
+        )
         try:
             response = httpx.post(
                 endpoint,
@@ -453,17 +526,35 @@ class OpenAICompatibleProvider:
             _raise_provider_http_error(response, self.settings, endpoint)
             payload = response.json()
             content = payload["choices"][0]["message"]["content"]
-            return validate_interview_review(_load_json_content(content))
+            result = validate_interview_review(_load_json_content(content))
         except AIProviderRequestError:
             raise
         except httpx.HTTPError as error:
+            logger.error(
+                "AI 调用失败(网络) generate_interview_review model=%s endpoint=%s error=%s",
+                self.settings.model,
+                endpoint,
+                error,
+            )
             raise AIProviderRequestError(
                 _format_provider_transport_error(error, self.settings, endpoint)
             ) from error
         except (KeyError, IndexError, TypeError, ValueError) as error:
+            logger.error(
+                "AI 调用失败(结构) generate_interview_review model=%s endpoint=%s error=%s",
+                self.settings.model,
+                endpoint,
+                error,
+            )
             raise InterviewReviewValidationError("AI 返回的复盘结构无效") from error
         except ResumeAnalysisValidationError as error:
             raise InterviewReviewValidationError("AI 返回的复盘结构无效") from error
+
+        logger.info(
+            "AI 调用成功 generate_interview_review 耗时=%.0fms",
+            (time.perf_counter() - started_at) * 1000,
+        )
+        return result
 
     def _build_interview_review_prompt(
         self,
