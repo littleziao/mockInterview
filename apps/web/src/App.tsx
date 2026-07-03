@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertCircle,
@@ -99,6 +99,11 @@ type ResumeAnalysisRecord = {
 
 type ResumeAnalysisRecordsPayload = {
   records: ResumeAnalysisRecord[];
+};
+
+type ResumeAnalysisRecordDetail = ResumeAnalysisRecord & {
+  resumeMarkdown: string;
+  analysis: ResumeAnalysis;
 };
 
 type InterviewSessionStyle = "study" | "pressure";
@@ -642,15 +647,23 @@ function SettingsPage() {
 function NewInterviewFlow({
   hasInProgressInterview,
   onAbandonActiveInterview,
+  onClearResumeAnalysisDraft,
   onResumeAnalysisCreated,
   onNavigateStep,
+  onUseResumeAnalysisRecord,
+  resumeAnalysisRecords,
+  resumeAnalysisDraft,
   resumeContext,
   step
 }: {
   hasInProgressInterview: boolean;
   onAbandonActiveInterview: (sessionId: number) => Promise<void> | void;
+  onClearResumeAnalysisDraft: () => void;
   onResumeAnalysisCreated: () => Promise<void> | void;
   onNavigateStep: (step: NewInterviewStep) => void;
+  onUseResumeAnalysisRecord: (recordId: number) => Promise<void> | void;
+  resumeAnalysisRecords: ResumeAnalysisRecord[];
+  resumeAnalysisDraft: ResumeAnalysisRecordDetail | null;
   resumeContext: ResumeContext | null;
   step: NewInterviewStep;
 }) {
@@ -669,6 +682,8 @@ function NewInterviewFlow({
   const [isStartingNextRound, setIsStartingNextRound] = useState(false);
   const [nextRoundError, setNextRoundError] = useState("");
   const [savedInterviewId, setSavedInterviewId] = useState<number | null>(null);
+  const [sourceResumeAnalysisRecordId, setSourceResumeAnalysisRecordId] = useState<number | null>(null);
+  const sourceResumeAnalysisRecordIdRef = useRef<number | null>(null);
   const [session, setSession] = useState<InterviewSession | null>(null);
   const [answerDraft, setAnswerDraft] = useState("");
   const [interviewError, setInterviewError] = useState("");
@@ -691,12 +706,34 @@ function NewInterviewFlow({
     setIncludeHrRound(resumeContext.interview.includeHrRound ?? false);
     setInterviewStyle(resumeContext.session.style);
     setSavedInterviewId(resumeContext.interview.id);
+    setSourceResumeAnalysisRecordId(null);
+    sourceResumeAnalysisRecordIdRef.current = null;
     setSession(resumeContext.session);
     setAnswerDraft("");
     setInterviewError("");
     setNextRoundError("");
     setWorkflowMessage("已恢复未完成的面试，可继续作答");
   }, [resumeContext]);
+
+  useEffect(() => {
+    if (!resumeAnalysisDraft) {
+      return;
+    }
+    setResumeMarkdown(resumeAnalysisDraft.resumeMarkdown);
+    setTargetRole(resumeAnalysisDraft.targetRole);
+    setAnalysis(resumeAnalysisDraft.analysis);
+    setInterviewMode("single_round");
+    setIncludeHrRound(false);
+    setInterviewStyle("study");
+    setSavedInterviewId(null);
+    setSourceResumeAnalysisRecordId(resumeAnalysisDraft.id);
+    sourceResumeAnalysisRecordIdRef.current = resumeAnalysisDraft.id;
+    setSession(null);
+    setAnswerDraft("");
+    setInterviewError("");
+    setNextRoundError("");
+    setWorkflowMessage("已载入历史简历分析，请确认或编辑后开始面试");
+  }, [resumeAnalysisDraft]);
 
   function applySessionUpdate(nextSession: InterviewSession) {
     setSession(nextSession);
@@ -709,9 +746,12 @@ function NewInterviewFlow({
   }
 
   function invalidateGeneratedState(message = "简历或目标岗位已修改，需要重新解析简历") {
-    if (analysis || savedInterviewId !== null || session) {
+    if (analysis || savedInterviewId !== null || sourceResumeAnalysisRecordId !== null || session) {
       setAnalysis(null);
       setSavedInterviewId(null);
+      setSourceResumeAnalysisRecordId(null);
+      sourceResumeAnalysisRecordIdRef.current = null;
+      onClearResumeAnalysisDraft();
       setSession(null);
       setAnswerDraft("");
       setWorkflowMessage(message);
@@ -780,6 +820,9 @@ function NewInterviewFlow({
       setAnalysis((await response.json()) as ResumeAnalysis);
       await onResumeAnalysisCreated();
       setSavedInterviewId(null);
+      setSourceResumeAnalysisRecordId(null);
+      sourceResumeAnalysisRecordIdRef.current = null;
+      onClearResumeAnalysisDraft();
       setSession(null);
       setAnswerDraft("");
       setWorkflowMessage("简历分析已生成，可继续编辑并确认配置");
@@ -805,6 +848,8 @@ function NewInterviewFlow({
     setWorkflowMessage("");
     try {
       let interviewId = savedInterviewId;
+      const activeSourceResumeAnalysisRecordId =
+        sourceResumeAnalysisRecordId ?? sourceResumeAnalysisRecordIdRef.current ?? resumeAnalysisDraft?.id ?? null;
       if (interviewId === null) {
         const response = await fetch(`${apiBaseUrl}/interviews`, {
           method: "POST",
@@ -814,6 +859,7 @@ function NewInterviewFlow({
             targetRole,
             interviewMode,
             includeHrRound: interviewMode === "multi_round" ? includeHrRound : false,
+            sourceResumeAnalysisRecordId: activeSourceResumeAnalysisRecordId ?? undefined,
             analysis: {
               background_summary: analysis.backgroundSummary,
               key_projects: analysis.keyProjects,
@@ -845,6 +891,7 @@ function NewInterviewFlow({
         throw new Error(detail?.detail ?? "启动面试失败");
       }
       setSession((await sessionResponse.json()) as InterviewSession);
+      await onResumeAnalysisCreated();
       setWorkflowMessage(`配置已确认，面试记录 #${interviewId} 已开始`);
       onNavigateStep("interview");
     } catch (error) {
@@ -1128,6 +1175,26 @@ function NewInterviewFlow({
             <span>目标岗位</span>
             <input onChange={(event) => updateTargetRole(event.target.value)} value={targetRole} />
           </label>
+
+          {resumeAnalysisRecords.length > 0 ? (
+            <div className="historyReuseBox" aria-label="从历史简历开始">
+              <strong>从历史简历开始</strong>
+              <ul>
+                {resumeAnalysisRecords.slice(0, 4).map((record) => (
+                  <li key={record.id}>
+                    <button
+                      className="secondaryButton"
+                      onClick={() => void onUseResumeAnalysisRecord(record.id)}
+                      type="button"
+                    >
+                      {record.targetRole || "由简历推断"}
+                    </button>
+                    <span>{record.summary}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -2347,7 +2414,13 @@ function ResumableInterviews({
   );
 }
 
-function ResumeAnalysisHistory({ records }: { records: ResumeAnalysisRecord[] }) {
+function ResumeAnalysisHistory({
+  onUseRecord,
+  records
+}: {
+  onUseRecord: (recordId: number) => Promise<void> | void;
+  records: ResumeAnalysisRecord[];
+}) {
   return (
     <section className="panel homeResumeAnalysisPanel" aria-labelledby="resume-analysis-history-title">
       <div className="sectionHeader">
@@ -2383,6 +2456,11 @@ function ResumeAnalysisHistory({ records }: { records: ResumeAnalysisRecord[] })
                   <span key={`topic-${record.id}-${topic}`}>{topic}</span>
                 ))}
               </div>
+              <div className="resumeAnalysisActions">
+                <button className="primaryButton" onClick={() => void onUseRecord(record.id)} type="button">
+                  用于面试
+                </button>
+              </div>
             </li>
           ))}
         </ul>
@@ -2395,6 +2473,7 @@ export function App() {
   const [route, setRoute] = useState<RouteId>(() => routeFromHash(window.location.hash));
   const [inProgressSessions, setInProgressSessions] = useState<ResumeableSession[]>([]);
   const [resumeAnalysisRecords, setResumeAnalysisRecords] = useState<ResumeAnalysisRecord[]>([]);
+  const [resumeAnalysisDraft, setResumeAnalysisDraft] = useState<ResumeAnalysisRecordDetail | null>(null);
   const [resumeContext, setResumeContext] = useState<ResumeContext | null>(null);
   const [resumeError, setResumeError] = useState("");
 
@@ -2469,10 +2548,26 @@ export function App() {
       }
       const session = (await sessionResponse.json()) as InterviewSession;
       const interview = (await interviewResponse.json()) as ResumedInterview;
+      setResumeAnalysisDraft(null);
       setResumeContext({ interview, session });
       navigate("new-interview");
     } catch (error) {
       setResumeError(error instanceof Error ? error.message : "恢复面试失败");
+    }
+  }
+
+  async function useResumeAnalysisRecord(recordId: number) {
+    setResumeError("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/resume-analysis-records/${recordId}`);
+      if (!response.ok) {
+        throw new Error("载入简历分析记录失败");
+      }
+      setResumeContext(null);
+      setResumeAnalysisDraft((await response.json()) as ResumeAnalysisRecordDetail);
+      navigate("new-analysis");
+    } catch (error) {
+      setResumeError(error instanceof Error ? error.message : "载入简历分析记录失败");
     }
   }
 
@@ -2535,7 +2630,7 @@ export function App() {
                   onResume={resumeInterview}
                   sessions={inProgressSessions}
                 />
-                <ResumeAnalysisHistory records={resumeAnalysisRecords} />
+                <ResumeAnalysisHistory onUseRecord={useResumeAnalysisRecord} records={resumeAnalysisRecords} />
               </>
             ) : null}
             {resumeError && route === "home" ? (
@@ -2544,8 +2639,12 @@ export function App() {
             <NewInterviewFlow
               hasInProgressInterview={inProgressSessions.length > 0}
               onAbandonActiveInterview={abandonInterview}
+              onClearResumeAnalysisDraft={() => setResumeAnalysisDraft(null)}
               onResumeAnalysisCreated={loadResumeAnalysisRecords}
               onNavigateStep={(step) => navigate(routeForStep(step))}
+              onUseResumeAnalysisRecord={useResumeAnalysisRecord}
+              resumeAnalysisDraft={resumeAnalysisDraft}
+              resumeAnalysisRecords={resumeAnalysisRecords}
               resumeContext={resumeContext}
               step={newInterviewStep}
             />

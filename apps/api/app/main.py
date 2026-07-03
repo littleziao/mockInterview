@@ -30,6 +30,7 @@ from .resume_analysis import (
     ResumeAnalysisRecord,
     initialize_resume_analysis_schema,
     list_resume_analysis_records,
+    read_resume_analysis_record,
     read_interview,
     save_resume_analysis_record,
     save_interview,
@@ -155,11 +156,25 @@ class ResumeAnalysisRecordsPayload(BaseModel):
     records: list[ResumeAnalysisRecordListItemPayload]
 
 
+class ResumeAnalysisRecordPayload(BaseModel):
+    id: int
+    resume_markdown: str = Field(serialization_alias="resumeMarkdown")
+    target_role: str = Field(serialization_alias="targetRole")
+    analysis: ResumeAnalysisPayload
+    created_at: str = Field(serialization_alias="createdAt")
+    last_used_at: str = Field(serialization_alias="lastUsedAt")
+    use_count: int = Field(serialization_alias="useCount")
+
+
 class ConfirmInterviewPayload(BaseModel):
     resume_markdown: str = Field(alias="resumeMarkdown")
     target_role: str = Field(default="", alias="targetRole")
     interview_mode: str = Field(default="single_round", alias="interviewMode")
     include_hr_round: bool = Field(default=False, alias="includeHrRound")
+    source_resume_analysis_record_id: int | None = Field(
+        default=None,
+        alias="sourceResumeAnalysisRecordId",
+    )
     analysis: ResumeAnalysis
 
 
@@ -169,6 +184,10 @@ class InterviewPayload(BaseModel):
     target_role: str = Field(serialization_alias="targetRole")
     interview_mode: str = Field(serialization_alias="interviewMode")
     include_hr_round: bool = Field(serialization_alias="includeHrRound")
+    source_resume_analysis_record_id: int | None = Field(
+        default=None,
+        serialization_alias="sourceResumeAnalysisRecordId",
+    )
     analysis: ResumeAnalysisPayload
 
 
@@ -227,6 +246,30 @@ def _to_resume_analysis_record_list_item_payload(
         created_at=record.created_at,
         last_used_at=record.last_used_at,
         use_count=record.use_count,
+    )
+
+
+def _to_resume_analysis_record_payload(record: ResumeAnalysisRecord) -> ResumeAnalysisRecordPayload:
+    return ResumeAnalysisRecordPayload(
+        id=record.id,
+        resume_markdown=record.resume_markdown,
+        target_role=record.target_role,
+        analysis=_to_resume_analysis_payload(record.analysis),
+        created_at=record.created_at,
+        last_used_at=record.last_used_at,
+        use_count=record.use_count,
+    )
+
+
+def _to_interview_payload(interview: InterviewRecord) -> InterviewPayload:
+    return InterviewPayload(
+        id=interview.id,
+        resume_markdown=interview.resume_markdown,
+        target_role=interview.target_role,
+        interview_mode=interview.interview_mode,
+        include_hr_round=interview.include_hr_round,
+        source_resume_analysis_record_id=interview.source_resume_analysis_record_id,
+        analysis=_to_resume_analysis_payload(interview.analysis),
     )
 
 
@@ -312,6 +355,14 @@ def get_resume_analysis_records() -> ResumeAnalysisRecordsPayload:
     )
 
 
+@app.get("/resume-analysis-records/{record_id}", response_model=ResumeAnalysisRecordPayload)
+def get_resume_analysis_record(record_id: int) -> ResumeAnalysisRecordPayload:
+    record = read_resume_analysis_record(record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="简历分析记录不存在")
+    return _to_resume_analysis_record_payload(record)
+
+
 @app.post("/interviews", response_model=InterviewPayload)
 def post_interview(payload: ConfirmInterviewPayload) -> InterviewPayload:
     resume_markdown = payload.resume_markdown.strip()
@@ -326,16 +377,12 @@ def post_interview(payload: ConfirmInterviewPayload) -> InterviewPayload:
         target_role=payload.target_role.strip(),
         interview_mode=interview_mode,
         include_hr_round=payload.include_hr_round,
+        source_resume_analysis_record_id=payload.source_resume_analysis_record_id,
         analysis=payload.analysis,
     )
-    return InterviewPayload(
-        id=interview.id,
-        resume_markdown=interview.resume_markdown,
-        target_role=interview.target_role,
-        interview_mode=interview.interview_mode,
-        include_hr_round=interview.include_hr_round,
-        analysis=_to_resume_analysis_payload(interview.analysis),
-    )
+    if interview is None:
+        raise HTTPException(status_code=404, detail="来源简历分析记录不存在")
+    return _to_interview_payload(interview)
 
 
 class TranscriptMessagePayload(BaseModel):
@@ -962,11 +1009,4 @@ def get_interview(interview_id: int) -> InterviewPayload:
     if interview is None:
         raise HTTPException(status_code=404, detail="面试记录不存在")
 
-    return InterviewPayload(
-        id=interview.id,
-        resume_markdown=interview.resume_markdown,
-        target_role=interview.target_role,
-        interview_mode=interview.interview_mode,
-        include_hr_round=interview.include_hr_round,
-        analysis=_to_resume_analysis_payload(interview.analysis),
-    )
+    return _to_interview_payload(interview)

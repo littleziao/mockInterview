@@ -36,6 +36,18 @@ let resumeAnalysisRecordsMock: {
   id: number;
   targetRole: string;
   summary: string;
+  resumeMarkdown: string;
+  analysis: {
+    backgroundSummary: string;
+    keyProjects: string[];
+    technicalStack: string[];
+    followUpTopics: string[];
+    riskPoints: string[];
+    unclearPoints: string[];
+    targetRoleNotes: string;
+    focusTopics: string[];
+    lowPriorityFollowUpTopics: string[];
+  };
   keyProjects: string[];
   technicalStack: string[];
   followUpTopics: string[];
@@ -199,6 +211,15 @@ describe("App", () => {
           return Response.json({ records: resumeAnalysisRecordsMock });
         }
 
+        if (url.match(/\/resume-analysis-records\/\d+$/) && !init) {
+          const recordId = Number(url.split("/").at(-1));
+          const record = resumeAnalysisRecordsMock.find((item) => item.id === recordId);
+          if (!record) {
+            return Response.json({}, { status: 404 });
+          }
+          return Response.json(record);
+        }
+
         if (url.match(/\/history\/\d+$/) && init?.method === "DELETE") {
           const deletedRecordId = Number(url.split("/").at(-1));
           deletedHistoryRecordIds.push(deletedRecordId);
@@ -299,6 +320,18 @@ describe("App", () => {
               id: resumeAnalysisRecordsMock.length + 1,
               targetRole: body.targetRole,
               summary: "候选人具备前端工程经验",
+              resumeMarkdown: body.resumeMarkdown,
+              analysis: {
+                backgroundSummary: "候选人具备前端工程经验",
+                keyProjects: ["Mock Interview"],
+                technicalStack: ["React", "FastAPI"],
+                followUpTopics: ["项目职责", "技术取舍"],
+                riskPoints: ["项目指标不清晰"],
+                unclearPoints: ["上线规模未说明"],
+                targetRoleNotes: "偏前端岗位",
+                focusTopics: ["项目表达"],
+                lowPriorityFollowUpTopics: ["弱相关运营经历"]
+              },
               keyProjects: ["Mock Interview"],
               technicalStack: ["React", "FastAPI"],
               followUpTopics: ["项目职责", "技术取舍"],
@@ -323,10 +356,41 @@ describe("App", () => {
 
         if (url.endsWith("/interviews") && init?.method === "POST") {
           const body = JSON.parse(String(init.body));
+          if (body.sourceResumeAnalysisRecordId) {
+            resumeAnalysisRecordsMock = resumeAnalysisRecordsMock.map((record) =>
+              record.id === body.sourceResumeAnalysisRecordId
+                ? {
+                    ...record,
+                    targetRole: body.targetRole,
+                    summary: body.analysis.background_summary,
+                    resumeMarkdown: body.resumeMarkdown,
+                    analysis: {
+                      backgroundSummary: body.analysis.background_summary,
+                      keyProjects: body.analysis.key_projects,
+                      technicalStack: body.analysis.technical_stack,
+                      followUpTopics: body.analysis.follow_up_topics,
+                      riskPoints: body.analysis.risk_points,
+                      unclearPoints: body.analysis.unclear_points,
+                      targetRoleNotes: body.analysis.target_role_notes,
+                      focusTopics: body.analysis.focus_topics,
+                      lowPriorityFollowUpTopics: body.analysis.low_priority_follow_up_topics
+                    },
+                    keyProjects: body.analysis.key_projects,
+                    technicalStack: body.analysis.technical_stack,
+                    followUpTopics: body.analysis.follow_up_topics,
+                    useCount: record.useCount + 1,
+                    lastUsedAt: "2026-07-03 11:00:00"
+                  }
+                : record
+            );
+          }
           return Response.json({
             id: 7,
             resumeMarkdown: body.resumeMarkdown,
             targetRole: body.targetRole,
+            interviewMode: body.interviewMode,
+            includeHrRound: body.includeHrRound,
+            sourceResumeAnalysisRecordId: body.sourceResumeAnalysisRecordId ?? null,
             analysis: body.analysis
           });
         }
@@ -764,6 +828,111 @@ describe("App", () => {
     expect(historyList).toHaveTextContent("使用 0 次");
     expect(historyList).toHaveTextContent("Mock Interview");
     expect(historyList).toHaveTextContent("React / FastAPI");
+  });
+
+  it("可从首页简历分析历史进入确认页，编辑后再开始面试", async () => {
+    resumeAnalysisRecordsMock = [
+      {
+        id: 42,
+        targetRole: "前端工程师",
+        summary: "历史背景摘要",
+        resumeMarkdown: "# 历史简历\n\n- 历史项目",
+        analysis: {
+          backgroundSummary: "历史背景摘要",
+          keyProjects: ["历史项目"],
+          technicalStack: ["React"],
+          followUpTopics: ["历史追问"],
+          riskPoints: ["历史风险"],
+          unclearPoints: [],
+          targetRoleNotes: "历史岗位说明",
+          focusTopics: ["历史重点"],
+          lowPriorityFollowUpTopics: ["历史低优先级"]
+        },
+        keyProjects: ["历史项目"],
+        technicalStack: ["React"],
+        followUpTopics: ["历史追问"],
+        createdAt: "2026-07-03 09:00:00",
+        lastUsedAt: "2026-07-03 09:00:00",
+        useCount: 0
+      }
+    ];
+    const user = userEvent.setup();
+    render(<App />);
+
+    const historyList = await screen.findByLabelText("简历分析历史列表");
+    await user.click(within(historyList).getByRole("button", { name: "用于面试" }));
+
+    expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
+    expect(screen.getByDisplayValue("历史背景摘要")).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/resume-analysis-records/42");
+    expect(fetch).not.toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/interviews/7/sessions",
+      expect.objectContaining({ method: "POST" })
+    );
+
+    const backgroundSummary = screen.getByDisplayValue("历史背景摘要");
+    await user.clear(backgroundSummary);
+    await user.type(backgroundSummary, "确认页编辑后的背景摘要");
+    await user.click(screen.getByRole("button", { name: "多轮面试" }));
+    await user.click(screen.getByRole("button", { name: "确认配置并开始面试" }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        "http://127.0.0.1:8000/interviews",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining('"sourceResumeAnalysisRecordId":42')
+        })
+      );
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/interviews",
+      expect.objectContaining({
+        body: expect.stringContaining("确认页编辑后的背景摘要")
+      })
+    );
+    expect(await screen.findByRole("heading", { name: "开始面试" })).toBeInTheDocument();
+    expect(screen.getByText("先做个自我介绍吧。")).toBeInTheDocument();
+  });
+
+  it("上传页可选择历史简历分析并进入确认页", async () => {
+    resumeAnalysisRecordsMock = [
+      {
+        id: 43,
+        targetRole: "后端工程师",
+        summary: "后端历史摘要",
+        resumeMarkdown: "# 后端简历",
+        analysis: {
+          backgroundSummary: "后端历史摘要",
+          keyProjects: ["API 项目"],
+          technicalStack: ["FastAPI"],
+          followUpTopics: ["接口设计"],
+          riskPoints: [],
+          unclearPoints: [],
+          targetRoleNotes: "",
+          focusTopics: [],
+          lowPriorityFollowUpTopics: []
+        },
+        keyProjects: ["API 项目"],
+        technicalStack: ["FastAPI"],
+        followUpTopics: ["接口设计"],
+        createdAt: "2026-07-03 09:10:00",
+        lastUsedAt: "2026-07-03 09:10:00",
+        useCount: 1
+      }
+    ];
+    const user = userEvent.setup();
+    render(<App />);
+
+    const reuseBox = await screen.findByLabelText("从历史简历开始");
+    await user.click(within(reuseBox).getByRole("button", { name: "后端工程师" }));
+
+    expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
+    expect(screen.getByDisplayValue("后端历史摘要")).toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/interviews/7/sessions",
+      expect.objectContaining({ method: "POST" })
+    );
   });
 
   it("回退修改目标岗位后显式失效已生成的简历分析", async () => {

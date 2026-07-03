@@ -3,7 +3,11 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from apps.api.app.main import app
-from apps.api.app.resume_analysis import list_resume_analysis_records, validate_resume_analysis
+from apps.api.app.resume_analysis import (
+    list_resume_analysis_records,
+    read_interview,
+    validate_resume_analysis,
+)
 
 
 def _configure_provider(client: TestClient, base_url: str = "fake://success") -> None:
@@ -171,3 +175,81 @@ def test_repeated_resume_analysis_generation_creates_independent_records(monkeyp
     assert body["records"][0]["keyProjects"] == ["基于 Markdown 简历识别出的核心项目"]
     assert body["records"][0]["technicalStack"] == ["TypeScript", "React", "FastAPI", "SQLite"]
     assert body["records"][0]["followUpTopics"] == ["项目职责边界", "技术选型取舍", "复杂问题排查"]
+
+
+def test_resume_analysis_record_can_be_read_with_full_resume_and_analysis(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        client.post(
+            "/resume-analyses/generate",
+            json={
+                "resumeMarkdown": "# 张三\n\n## 项目经历\n- Mock Interview",
+                "targetRole": "前端工程师",
+            },
+        )
+        record_id = list_resume_analysis_records()[0].id
+        response = client.get(f"/resume-analysis-records/{record_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == record_id
+    assert body["resumeMarkdown"] == "# 张三\n\n## 项目经历\n- Mock Interview"
+    assert body["targetRole"] == "前端工程师"
+    assert body["analysis"]["backgroundSummary"] == "张三 具备项目交付和工程实现经验。"
+
+
+def test_confirming_interview_from_resume_analysis_record_updates_confirmed_version_and_usage(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        client.post(
+            "/resume-analyses/generate",
+            json={
+                "resumeMarkdown": "# 初始简历\n\n- Mock Interview",
+                "targetRole": "前端工程师",
+            },
+        )
+        source_record = list_resume_analysis_records()[0]
+
+        response = client.post(
+            "/interviews",
+            json={
+                "resumeMarkdown": "# 确认版简历\n\n- Mock Interview\n- 指标补充",
+                "targetRole": "资深前端工程师",
+                "interviewMode": "single_round",
+                "sourceResumeAnalysisRecordId": source_record.id,
+                "analysis": {
+                    "background_summary": "用户确认后的背景摘要",
+                    "key_projects": ["Mock Interview", "AI Provider 设置"],
+                    "technical_stack": ["React", "FastAPI"],
+                    "follow_up_topics": ["项目职责", "技术取舍"],
+                    "risk_points": ["指标需要量化"],
+                    "unclear_points": [],
+                    "target_role_notes": "偏资深前端岗位",
+                    "focus_topics": ["架构取舍"],
+                    "low_priority_follow_up_topics": ["弱相关经历"],
+                },
+            },
+        )
+        read_response = client.get(f"/interviews/{response.json()['id']}")
+
+    refreshed_record = list_resume_analysis_records()[0]
+    interview = read_interview(response.json()["id"])
+
+    assert response.status_code == 200
+    assert response.json()["sourceResumeAnalysisRecordId"] == source_record.id
+    assert read_response.json()["sourceResumeAnalysisRecordId"] == source_record.id
+    assert interview is not None
+    assert interview.source_resume_analysis_record_id == source_record.id
+    assert refreshed_record.resume_markdown == "# 确认版简历\n\n- Mock Interview\n- 指标补充"
+    assert refreshed_record.target_role == "资深前端工程师"
+    assert refreshed_record.analysis.background_summary == "用户确认后的背景摘要"
+    assert refreshed_record.use_count == 1
+    assert refreshed_record.last_used_at >= source_record.last_used_at
