@@ -38,6 +38,7 @@ from .resume_analysis import (
     read_interview,
     save_resume_analysis_record,
     save_interview,
+    validate_target_job_description,
 )
 from .interview_session import (
     DEFAULT_MAIN_QUESTIONS,
@@ -175,11 +176,13 @@ class ResumeAnalysisPayload(BaseModel):
 class GenerateResumeAnalysisPayload(BaseModel):
     resume_markdown: str = Field(alias="resumeMarkdown")
     target_role: str = Field(default="", alias="targetRole")
+    target_job_description: str = Field(default="", alias="targetJobDescription")
 
 
 class ResumeAnalysisRecordListItemPayload(BaseModel):
     id: int
     target_role: str = Field(serialization_alias="targetRole")
+    has_target_job_description: bool = Field(serialization_alias="hasTargetJobDescription")
     summary: str
     key_projects: list[str] = Field(serialization_alias="keyProjects")
     technical_stack: list[str] = Field(serialization_alias="technicalStack")
@@ -197,6 +200,7 @@ class ResumeAnalysisRecordPayload(BaseModel):
     id: int
     resume_markdown: str = Field(serialization_alias="resumeMarkdown")
     target_role: str = Field(serialization_alias="targetRole")
+    target_job_description: str = Field(serialization_alias="targetJobDescription")
     analysis: ResumeAnalysisPayload
     created_at: str = Field(serialization_alias="createdAt")
     last_used_at: str = Field(serialization_alias="lastUsedAt")
@@ -206,6 +210,7 @@ class ResumeAnalysisRecordPayload(BaseModel):
 class ConfirmInterviewPayload(BaseModel):
     resume_markdown: str = Field(alias="resumeMarkdown")
     target_role: str = Field(default="", alias="targetRole")
+    target_job_description: str = Field(default="", alias="targetJobDescription")
     interview_mode: str = Field(default="single_round", alias="interviewMode")
     include_hr_round: bool = Field(default=False, alias="includeHrRound")
     source_resume_analysis_record_id: int | None = Field(
@@ -219,6 +224,7 @@ class InterviewPayload(BaseModel):
     id: int
     resume_markdown: str = Field(serialization_alias="resumeMarkdown")
     target_role: str = Field(serialization_alias="targetRole")
+    target_job_description: str = Field(serialization_alias="targetJobDescription")
     interview_mode: str = Field(serialization_alias="interviewMode")
     include_hr_round: bool = Field(serialization_alias="includeHrRound")
     source_resume_analysis_record_id: int | None = Field(
@@ -276,6 +282,7 @@ def _to_resume_analysis_record_list_item_payload(
     return ResumeAnalysisRecordListItemPayload(
         id=record.id,
         target_role=record.target_role,
+        has_target_job_description=bool(record.target_job_description.strip()),
         summary=record.analysis.background_summary,
         key_projects=record.analysis.key_projects,
         technical_stack=record.analysis.technical_stack,
@@ -291,6 +298,7 @@ def _to_resume_analysis_record_payload(record: ResumeAnalysisRecord) -> ResumeAn
         id=record.id,
         resume_markdown=record.resume_markdown,
         target_role=record.target_role,
+        target_job_description=record.target_job_description,
         analysis=_to_resume_analysis_payload(record.analysis),
         created_at=record.created_at,
         last_used_at=record.last_used_at,
@@ -303,6 +311,7 @@ def _to_interview_payload(interview: InterviewRecord) -> InterviewPayload:
         id=interview.id,
         resume_markdown=interview.resume_markdown,
         target_role=interview.target_role,
+        target_job_description=interview.target_job_description,
         interview_mode=interview.interview_mode,
         include_hr_round=interview.include_hr_round,
         source_resume_analysis_record_id=interview.source_resume_analysis_record_id,
@@ -355,6 +364,10 @@ def post_resume_analysis(payload: GenerateResumeAnalysisPayload) -> ResumeAnalys
     resume_markdown = payload.resume_markdown.strip()
     if not resume_markdown:
         raise HTTPException(status_code=400, detail="Markdown 简历不能为空")
+    try:
+        target_job_description = validate_target_job_description(payload.target_job_description)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
     active_provider = read_ai_provider_store().active_provider
     if active_provider is None:
@@ -365,6 +378,7 @@ def post_resume_analysis(payload: GenerateResumeAnalysisPayload) -> ResumeAnalys
             active_provider,
             resume_markdown=resume_markdown,
             target_role=payload.target_role.strip(),
+            target_job_description=target_job_description,
         )
     except ResumeAnalysisValidationError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
@@ -376,6 +390,7 @@ def post_resume_analysis(payload: GenerateResumeAnalysisPayload) -> ResumeAnalys
     save_resume_analysis_record(
         resume_markdown=resume_markdown,
         target_role=payload.target_role.strip(),
+        target_job_description=target_job_description,
         analysis=analysis,
     )
 
@@ -413,6 +428,10 @@ def post_interview(payload: ConfirmInterviewPayload) -> InterviewPayload:
     resume_markdown = payload.resume_markdown.strip()
     if not resume_markdown:
         raise HTTPException(status_code=400, detail="Markdown 简历不能为空")
+    try:
+        target_job_description = validate_target_job_description(payload.target_job_description)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     interview_mode = payload.interview_mode.strip() or "single_round"
     if interview_mode not in ("single_round", "multi_round"):
         raise HTTPException(status_code=400, detail="面试模式只能是 single_round 或 multi_round")
@@ -420,6 +439,7 @@ def post_interview(payload: ConfirmInterviewPayload) -> InterviewPayload:
     interview = save_interview(
         resume_markdown=resume_markdown,
         target_role=payload.target_role.strip(),
+        target_job_description=target_job_description,
         interview_mode=interview_mode,
         include_hr_round=payload.include_hr_round,
         source_resume_analysis_record_id=payload.source_resume_analysis_record_id,

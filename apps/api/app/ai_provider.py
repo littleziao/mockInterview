@@ -45,6 +45,8 @@ RESUME_ANALYSIS_JSON_EXAMPLE = {
     "low_priority_follow_up_topics": ["与目标岗位弱相关的零散经历"],
 }
 
+JD_CALIBRATED_TARGET_ROLE_NOTE = "目标岗位 JD 已作为校准输入，后续面试应优先核对岗位职责、技术要求和简历匹配证据。"
+
 
 INTERVIEWER_ACTION_JSON_EXAMPLE = {
     "kind": "follow_up",
@@ -157,7 +159,13 @@ class AIProvider(Protocol):
     def test_connection(self) -> ProviderTestResult:
         raise NotImplementedError
 
-    def analyze_resume(self, *, resume_markdown: str, target_role: str) -> ResumeAnalysis:
+    def analyze_resume(
+        self,
+        *,
+        resume_markdown: str,
+        target_role: str,
+        target_job_description: str = "",
+    ) -> ResumeAnalysis:
         raise NotImplementedError
 
     def generate_next_interviewer_action(
@@ -190,7 +198,13 @@ class FakeAIProvider:
 
         return ProviderTestResult(status="success", message="AI Provider 连接测试成功")
 
-    def analyze_resume(self, *, resume_markdown: str, target_role: str) -> ResumeAnalysis:
+    def analyze_resume(
+        self,
+        *,
+        resume_markdown: str,
+        target_role: str,
+        target_job_description: str = "",
+    ) -> ResumeAnalysis:
         if self.settings.base_url == "fake://invalid-analysis":
             return validate_resume_analysis({"background_summary": ""})
 
@@ -203,7 +217,11 @@ class FakeAIProvider:
                 "follow_up_topics": ["项目职责边界", "技术选型取舍", "复杂问题排查"],
                 "risk_points": ["需要进一步验证项目深度"],
                 "unclear_points": ["部分项目结果指标不够明确"],
-                "target_role_notes": target_role or "未填写目标岗位，后续面试将根据简历推断方向。",
+                "target_role_notes": (
+                    JD_CALIBRATED_TARGET_ROLE_NOTE
+                    if target_job_description
+                    else target_role or "未填写目标岗位，后续面试将根据简历推断方向。"
+                ),
                 "focus_topics": ["项目经验表达", "技术深度"],
                 "low_priority_follow_up_topics": ["与目标岗位弱相关的零散经历"],
             }
@@ -335,7 +353,13 @@ class OpenAICompatibleProvider:
         )
         return ProviderTestResult(status="success", message="AI Provider 连接测试成功")
 
-    def analyze_resume(self, *, resume_markdown: str, target_role: str) -> ResumeAnalysis:
+    def analyze_resume(
+        self,
+        *,
+        resume_markdown: str,
+        target_role: str,
+        target_job_description: str = "",
+    ) -> ResumeAnalysis:
         endpoint = self.settings.base_url.rstrip("/") + "/chat/completions"
         started_at = time.perf_counter()
         logger.debug("AI 请求 analyze_resume model=%s endpoint=%s", self.settings.model, endpoint)
@@ -356,7 +380,7 @@ class OpenAICompatibleProvider:
                         {
                             "role": "user",
                             "content": (
-                                "请基于 Markdown 简历和目标岗位生成结构化简历分析。"
+                                "请基于 Markdown 简历、目标岗位和可选目标岗位 JD 生成结构化简历分析。"
                                 "必须只返回一个 JSON object。JSON 字段必须包含 background_summary, key_projects, "
                                 "technical_stack, follow_up_topics, risk_points, unclear_points, "
                                 "target_role_notes, focus_topics, low_priority_follow_up_topics。"
@@ -364,6 +388,7 @@ class OpenAICompatibleProvider:
                                 "\nJSON 示例："
                                 f"\n{json.dumps(RESUME_ANALYSIS_JSON_EXAMPLE, ensure_ascii=False)}"
                                 f"\n目标岗位：{target_role or '未填写'}"
+                                f"\n目标岗位 JD：\n{target_job_description or '未填写'}"
                                 f"\nMarkdown 简历：\n{resume_markdown}"
                             ),
                         },
@@ -708,11 +733,16 @@ def analyze_resume_with_provider(
     *,
     resume_markdown: str,
     target_role: str,
+    target_job_description: str = "",
 ) -> ResumeAnalysis:
     if not settings.is_configured:
         raise ValueError("请先保存供应商名称、baseUrl、apiKey 和 model")
 
-    return build_ai_provider(settings).analyze_resume(resume_markdown=resume_markdown, target_role=target_role)
+    return build_ai_provider(settings).analyze_resume(
+        resume_markdown=resume_markdown,
+        target_role=target_role,
+        target_job_description=target_job_description,
+    )
 
 
 def generate_next_interviewer_action_with_provider(

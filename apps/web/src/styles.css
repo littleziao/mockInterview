@@ -34,6 +34,18 @@ input:disabled {
   opacity: 0.66;
 }
 
+.fieldHint {
+  color: #62706a;
+  display: block;
+  font-size: 0.8rem;
+  margin-top: 6px;
+}
+
+.fieldHint.failure {
+  color: #b42318;
+  font-weight: 700;
+}
+
 .appShell {
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr) 320px;
@@ -1192,9 +1204,9 @@ fieldset {
   overflow-wrap: anywhere;
 }
 
-/* 首页「未完成的面试」卡片：与历史记录卡片保持一致的列表项外观。 */
+/* 首页「未完成的面试」卡片与「简历库」面板：与历史记录卡片保持一致的列表项外观。 */
 .homeResumePanel,
-.homeResumeAnalysisPanel {
+.resumeLibraryPanel {
   margin-bottom: 18px;
   padding: 22px;
 }
@@ -1446,6 +1458,11 @@ fieldset {
   font-size: 13px;
   line-height: 1.6;
   overflow-wrap: anywhere;
+}
+
+.emptyInlineState {
+  color: #62706a;
+  margin: 0;
 }
 
 .trendHeading {

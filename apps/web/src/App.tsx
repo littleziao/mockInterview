@@ -9,6 +9,7 @@ import {
   ClipboardList,
   Download,
   Eye,
+  FileText,
   FileUp,
   History,
   Home,
@@ -40,9 +41,12 @@ const resumePreview = [
   "- 后端工程：FastAPI 服务与结构化 JSON 校验"
 ].join("\n");
 
+const targetJobDescriptionLimit = 8000;
+
 const navItems = [
   { id: "home", label: "首页", icon: Home },
   { id: "new", label: "新建面试", icon: ClipboardList },
+  { id: "resume-history", label: "简历库", icon: FileText },
   { id: "history", label: "历史与趋势", icon: Radar },
   { id: "settings", label: "设置", icon: Settings }
 ] as const;
@@ -82,12 +86,13 @@ type ResumeAnalysis = {
   unclearPoints: string[];
   targetRoleNotes: string;
   focusTopics: string[];
- lowPriorityFollowUpTopics: string[];
+  lowPriorityFollowUpTopics: string[];
 };
 
 type ResumeAnalysisRecord = {
   id: number;
   targetRole: string;
+  hasTargetJobDescription?: boolean;
   summary: string;
   keyProjects: string[];
   technicalStack: string[];
@@ -103,6 +108,7 @@ type ResumeAnalysisRecordsPayload = {
 
 type ResumeAnalysisRecordDetail = ResumeAnalysisRecord & {
   resumeMarkdown: string;
+  targetJobDescription?: string;
   analysis: ResumeAnalysis;
 };
 
@@ -162,6 +168,7 @@ type ResumedInterview = {
   id: number;
   resumeMarkdown: string;
   targetRole: string;
+  targetJobDescription?: string;
   interviewMode: InterviewMode;
   includeHrRound?: boolean;
   analysis: ResumeAnalysis;
@@ -230,7 +237,7 @@ type HistoryPayload = {
   trends: TrendDimension[];
 };
 
-type RouteId = "home" | "new-upload" | "new-analysis" | "new-interview" | "review" | "history" | "settings";
+type RouteId = "home" | "new-upload" | "new-analysis" | "new-interview" | "review" | "history" | "resume-history" | "settings";
 
 const interviewStyleOptions: { value: InterviewSessionStyle; label: string }[] = [
   { value: "study", label: "学习梳理面" },
@@ -256,6 +263,8 @@ function routeFromHash(hash: string): RouteId {
       return "review";
     case "/history":
       return "history";
+    case "/resume-history":
+      return "resume-history";
     case "/settings":
       return "settings";
     default:
@@ -275,6 +284,8 @@ function hashForRoute(route: RouteId) {
       return "#/review";
     case "history":
       return "#/history";
+    case "resume-history":
+      return "#/resume-history";
     case "settings":
       return "#/settings";
     default:
@@ -301,6 +312,8 @@ function viewForRoute(route: RouteId): ViewId {
       return "settings";
     case "history":
       return "history";
+    case "resume-history":
+      return "resume-history";
     case "home":
       return "home";
     default:
@@ -669,6 +682,7 @@ function NewInterviewFlow({
 }) {
   const [resumeMarkdown, setResumeMarkdown] = useState(resumePreview);
   const [targetRole, setTargetRole] = useState("前端工程师");
+  const [targetJobDescription, setTargetJobDescription] = useState("");
   const [analysis, setAnalysis] = useState<ResumeAnalysis | null>(null);
   const [lastImportedFileName, setLastImportedFileName] = useState("");
   const [fileError, setFileError] = useState("");
@@ -701,6 +715,7 @@ function NewInterviewFlow({
     }
     setResumeMarkdown(resumeContext.interview.resumeMarkdown);
     setTargetRole(resumeContext.interview.targetRole);
+    setTargetJobDescription(resumeContext.interview.targetJobDescription ?? "");
     setAnalysis(resumeContext.interview.analysis);
     setInterviewMode(resumeContext.interview.interviewMode);
     setIncludeHrRound(resumeContext.interview.includeHrRound ?? false);
@@ -721,6 +736,7 @@ function NewInterviewFlow({
     }
     setResumeMarkdown(resumeAnalysisDraft.resumeMarkdown);
     setTargetRole(resumeAnalysisDraft.targetRole);
+    setTargetJobDescription(resumeAnalysisDraft.targetJobDescription ?? "");
     setAnalysis(resumeAnalysisDraft.analysis);
     setInterviewMode("single_round");
     setIncludeHrRound(false);
@@ -745,7 +761,7 @@ function NewInterviewFlow({
     }
   }
 
-  function invalidateGeneratedState(message = "简历或目标岗位已修改，需要重新解析简历") {
+  function invalidateGeneratedState(message = "简历、目标岗位或目标岗位 JD 已修改，需要重新解析简历") {
     if (analysis || savedInterviewId !== null || sourceResumeAnalysisRecordId !== null || session) {
       setAnalysis(null);
       setSavedInterviewId(null);
@@ -765,6 +781,11 @@ function NewInterviewFlow({
 
   function updateTargetRole(value: string) {
     setTargetRole(value);
+    invalidateGeneratedState();
+  }
+
+  function updateTargetJobDescription(value: string) {
+    setTargetJobDescription(value);
     invalidateGeneratedState();
   }
 
@@ -801,6 +822,10 @@ function NewInterviewFlow({
       setWorkflowMessage("Markdown 简历不能为空");
       return;
     }
+    if (targetJobDescription.trim().length > targetJobDescriptionLimit) {
+      setWorkflowMessage(`目标岗位 JD 不能超过 ${targetJobDescriptionLimit} 字符`);
+      return;
+    }
 
     setIsAnalyzing(true);
     setWorkflowMessage("");
@@ -810,7 +835,8 @@ function NewInterviewFlow({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           resumeMarkdown,
-          targetRole
+          targetRole,
+          targetJobDescription
         })
       });
       if (!response.ok) {
@@ -843,6 +869,10 @@ function NewInterviewFlow({
       setWorkflowMessage("请先生成简历分析");
       return;
     }
+    if (targetJobDescription.trim().length > targetJobDescriptionLimit) {
+      setWorkflowMessage(`目标岗位 JD 不能超过 ${targetJobDescriptionLimit} 字符`);
+      return;
+    }
 
     setIsSavingInterview(true);
     setWorkflowMessage("");
@@ -857,6 +887,7 @@ function NewInterviewFlow({
           body: JSON.stringify({
             resumeMarkdown,
             targetRole,
+            targetJobDescription,
             interviewMode,
             includeHrRound: interviewMode === "multi_round" ? includeHrRound : false,
             sourceResumeAnalysisRecordId: activeSourceResumeAnalysisRecordId ?? undefined,
@@ -1140,7 +1171,7 @@ function NewInterviewFlow({
       <div className="sectionHeader">
         <div>
           <h2 id="setup-title">上传简历</h2>
-          <p>输入或导入 Markdown 简历，并填写可选目标岗位。</p>
+          <p>输入或导入 Markdown 简历，并填写可选目标岗位与目标岗位 JD。</p>
         </div>
         <button className="primaryButton" disabled={isAnalyzing} onClick={generateAnalysis} type="button">
           <Sparkles size={16} aria-hidden="true" />
@@ -1176,6 +1207,26 @@ function NewInterviewFlow({
             <input onChange={(event) => updateTargetRole(event.target.value)} value={targetRole} />
           </label>
 
+          <label className="targetJobDescriptionField">
+            <span>目标岗位 JD（可选）</span>
+            <textarea
+              aria-describedby="target-job-description-count"
+              onChange={(event) => updateTargetJobDescription(event.target.value)}
+              rows={8}
+              value={targetJobDescription}
+            />
+            <small
+              className={
+                targetJobDescription.trim().length > targetJobDescriptionLimit
+                  ? "fieldHint failure"
+                  : "fieldHint"
+              }
+              id="target-job-description-count"
+            >
+              {targetJobDescription.trim().length} / {targetJobDescriptionLimit}
+            </small>
+          </label>
+
           {resumeAnalysisRecords.length > 0 ? (
             <div className="historyReuseBox" aria-label="从历史简历开始">
               <strong>从历史简历开始</strong>
@@ -1189,7 +1240,10 @@ function NewInterviewFlow({
                     >
                       {record.targetRole || "由简历推断"}
                     </button>
-                    <span>{record.summary}</span>
+                    <span>
+                      {record.hasTargetJobDescription ? "含 JD · " : ""}
+                      {record.summary}
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -2439,6 +2493,14 @@ function ResumeAnalysisDetail({
         <h3 id="resume-detail-resume-title">完整 Markdown 简历</h3>
         <pre className="resumeMarkdownPre">{detail.resumeMarkdown}</pre>
       </section>
+      <section className="resumeAnalysisDetailBlock" aria-labelledby="resume-detail-jd-title">
+        <h3 id="resume-detail-jd-title">完整目标岗位 JD</h3>
+        {detail.targetJobDescription?.trim() ? (
+          <pre className="resumeMarkdownPre">{detail.targetJobDescription}</pre>
+        ) : (
+          <p className="emptyInlineState">未提供目标岗位 JD</p>
+        )}
+      </section>
       <section className="resumeAnalysisDetailBlock" aria-labelledby="resume-detail-analysis-title">
         <h3 id="resume-detail-analysis-title">完整结构化简历分析</h3>
         <div className="resumeAnalysisDetailField">
@@ -2556,11 +2618,11 @@ function ResumeAnalysisHistory({
   }
 
   return (
-    <section className="panel homeResumeAnalysisPanel" aria-labelledby="resume-analysis-history-title">
+    <section className="panel resumeLibraryPanel" aria-labelledby="resume-analysis-history-title">
       <div className="sectionHeader">
         <div>
-          <h2 id="resume-analysis-history-title">简历分析历史</h2>
-          <p>成功解析过的 Markdown 简历会保存在这里，便于确认和辨认。</p>
+          <h2 id="resume-analysis-history-title">简历库</h2>
+          <p>成功解析过的 Markdown 简历会保存在这里，便于确认、辨认和复用。</p>
         </div>
       </div>
 
@@ -2578,8 +2640,10 @@ function ResumeAnalysisHistory({
               <div className="resumeAnalysisMeta">
                 <span>使用 {record.useCount} 次</span>
                 <span>最后使用 {formatCompletedAt(record.lastUsedAt)}</span>
+                <span>{record.hasTargetJobDescription ? "含目标岗位 JD" : "无目标岗位 JD"}</span>
               </div>
               <div className="resumeAnalysisTags" aria-label={`简历分析记录 ${record.id} 摘要`}>
+                <span>{record.hasTargetJobDescription ? "含 JD" : "无 JD"}</span>
                 {record.keyProjects.slice(0, 2).map((project) => (
                   <span key={`project-${record.id}-${project}`}>{project}</span>
                 ))}
@@ -2830,21 +2894,23 @@ export function App() {
           <SettingsPage />
         ) : route === "history" ? (
           <HistoryPage />
+        ) : route === "resume-history" ? (
+          <>
+            <ResumeAnalysisHistory
+              onDeleteRecord={deleteResumeAnalysisRecord}
+              onUseRecord={useResumeAnalysisRecord}
+              records={resumeAnalysisRecords}
+            />
+            {resumeError ? <div className="workflowMessage failure">{resumeError}</div> : null}
+          </>
         ) : (
           <>
             {route === "home" ? (
-              <>
-                <ResumableInterviews
-                  onAbandon={abandonInterview}
-                  onResume={resumeInterview}
-                  sessions={inProgressSessions}
-                />
-                <ResumeAnalysisHistory
-                  onDeleteRecord={deleteResumeAnalysisRecord}
-                  onUseRecord={useResumeAnalysisRecord}
-                  records={resumeAnalysisRecords}
-                />
-              </>
+              <ResumableInterviews
+                onAbandon={abandonInterview}
+                onResume={resumeInterview}
+                sessions={inProgressSessions}
+              />
             ) : null}
             {resumeError && route === "home" ? (
               <div className="workflowMessage failure">{resumeError}</div>

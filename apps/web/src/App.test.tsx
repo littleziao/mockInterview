@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -35,6 +35,8 @@ let sessionRoundTitleMock = "同事技术面";
 let resumeAnalysisRecordsMock: {
   id: number;
   targetRole: string;
+  targetJobDescription?: string;
+  hasTargetJobDescription?: boolean;
   summary: string;
   resumeMarkdown: string;
   analysis: {
@@ -334,6 +336,8 @@ describe("App", () => {
             {
               id: resumeAnalysisRecordsMock.length + 1,
               targetRole: body.targetRole,
+              targetJobDescription: body.targetJobDescription ?? "",
+              hasTargetJobDescription: Boolean(body.targetJobDescription?.trim()),
               summary: "候选人具备前端工程经验",
               resumeMarkdown: body.resumeMarkdown,
               analysis: {
@@ -377,6 +381,8 @@ describe("App", () => {
                 ? {
                     ...record,
                     targetRole: body.targetRole,
+                    targetJobDescription: body.targetJobDescription ?? "",
+                    hasTargetJobDescription: Boolean(body.targetJobDescription?.trim()),
                     summary: body.analysis.background_summary,
                     resumeMarkdown: body.resumeMarkdown,
                     analysis: {
@@ -403,6 +409,7 @@ describe("App", () => {
             id: 7,
             resumeMarkdown: body.resumeMarkdown,
             targetRole: body.targetRole,
+            targetJobDescription: body.targetJobDescription ?? "",
             interviewMode: body.interviewMode,
             includeHrRound: body.includeHrRound,
             sourceResumeAnalysisRecordId: body.sourceResumeAnalysisRecordId ?? null,
@@ -590,6 +597,7 @@ describe("App", () => {
             id: 7,
             resumeMarkdown: "# 恢复的简历",
             targetRole: "前端工程师",
+            targetJobDescription: "",
             interviewMode: "single_round",
             analysis: {
               backgroundSummary: "恢复的背景摘要",
@@ -828,14 +836,64 @@ describe("App", () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:mock-review");
   });
 
-  it("解析成功后回到首页可看到简历分析历史列表", async () => {
+  it("上传页可粘贴目标岗位 JD 并在解析和开始面试时透传", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.type(
+      screen.getByLabelText(/目标岗位 JD/),
+      "职责：负责 React 工作台体验；要求：TypeScript、接口协作。"
+    );
+    expect(screen.getByText("37 / 8000")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "解析简历" }));
+
+    expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        "http://127.0.0.1:8000/resume-analyses/generate",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining('"targetJobDescription":"职责：负责 React 工作台体验；要求：TypeScript、接口协作。"')
+        })
+      );
+    });
+
+    await user.click(screen.getByRole("button", { name: "确认配置并开始面试" }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        "http://127.0.0.1:8000/interviews",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining('"targetJobDescription":"职责：负责 React 工作台体验；要求：TypeScript、接口协作。"')
+        })
+      );
+    });
+  });
+
+  it("目标岗位 JD 超过 8000 字符时前端拦截解析并提示", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText(/目标岗位 JD/), { target: { value: "前".repeat(8001) } });
+    await user.click(screen.getByRole("button", { name: "解析简历" }));
+
+    expect(screen.getByText("目标岗位 JD 不能超过 8000 字符")).toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/resume-analyses/generate",
+      expect.anything()
+    );
+  });
+
+  it("解析成功后在简历库可看到简历分析历史列表", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "解析简历" }));
     expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "首页" }));
+    await user.click(screen.getByRole("button", { name: "简历库" }));
 
     const historyList = await screen.findByLabelText("简历分析历史列表");
     expect(historyList).toHaveTextContent("前端工程师");
@@ -845,11 +903,13 @@ describe("App", () => {
     expect(historyList).toHaveTextContent("React / FastAPI");
   });
 
-  it("可从首页简历分析历史进入确认页，编辑后再开始面试", async () => {
+  it("可从简历库进入确认页，编辑后再开始面试", async () => {
     resumeAnalysisRecordsMock = [
       {
         id: 42,
         targetRole: "前端工程师",
+        targetJobDescription: "历史 JD：负责 React 平台体验。",
+        hasTargetJobDescription: true,
         summary: "历史背景摘要",
         resumeMarkdown: "# 历史简历\n\n- 历史项目",
         analysis: {
@@ -874,6 +934,7 @@ describe("App", () => {
     const user = userEvent.setup();
     render(<App />);
 
+    await user.click(screen.getByRole("button", { name: "简历库" }));
     const historyList = await screen.findByLabelText("简历分析历史列表");
     await user.click(within(historyList).getByRole("button", { name: "用于面试" }));
 
@@ -910,11 +971,13 @@ describe("App", () => {
     expect(screen.getByText("先做个自我介绍吧。")).toBeInTheDocument();
   });
 
-  it("可在首页简历分析历史展开详情查看完整 Markdown 简历和结构化分析", async () => {
+  it("可在简历库展开详情查看完整 Markdown 简历和结构化分析", async () => {
     resumeAnalysisRecordsMock = [
       {
         id: 42,
         targetRole: "前端工程师",
+        targetJobDescription: "历史 JD：负责 React 平台体验。",
+        hasTargetJobDescription: true,
         summary: "历史背景摘要",
         resumeMarkdown: "# 历史简历\n\n## 项目经历\n- 历史项目",
         analysis: {
@@ -939,11 +1002,15 @@ describe("App", () => {
     const user = userEvent.setup();
     render(<App />);
 
+    await user.click(screen.getByRole("button", { name: "简历库" }));
     const historyList = await screen.findByLabelText("简历分析历史列表");
+    expect(historyList).toHaveTextContent("含目标岗位 JD");
     await user.click(within(historyList).getByRole("button", { name: "查看详情" }));
 
     const detail = await screen.findByLabelText("简历分析记录详情");
     expect(detail).toHaveTextContent("# 历史简历");
+    expect(detail).toHaveTextContent("完整目标岗位 JD");
+    expect(detail).toHaveTextContent("历史 JD：负责 React 平台体验。");
     expect(detail).toHaveTextContent("完整背景摘要");
     expect(detail).toHaveTextContent("历史项目");
     expect(detail).toHaveTextContent("React");
@@ -953,6 +1020,47 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "收起详情" }));
     expect(screen.queryByLabelText("简历分析记录详情")).not.toBeInTheDocument();
+  });
+
+  it("从简历库复用记录时预填目标岗位 JD", async () => {
+    resumeAnalysisRecordsMock = [
+      {
+        id: 42,
+        targetRole: "前端工程师",
+        targetJobDescription: "历史 JD：负责 React 平台体验。",
+        hasTargetJobDescription: true,
+        summary: "历史背景摘要",
+        resumeMarkdown: "# 历史简历\n\n- 历史项目",
+        analysis: {
+          backgroundSummary: "历史背景摘要",
+          keyProjects: ["历史项目"],
+          technicalStack: ["React"],
+          followUpTopics: ["历史追问"],
+          riskPoints: [],
+          unclearPoints: [],
+          targetRoleNotes: "历史岗位说明",
+          focusTopics: [],
+          lowPriorityFollowUpTopics: []
+        },
+        keyProjects: ["历史项目"],
+        technicalStack: ["React"],
+        followUpTopics: ["历史追问"],
+        createdAt: "2026-07-03 09:00:00",
+        lastUsedAt: "2026-07-03 09:00:00",
+        useCount: 0
+      }
+    ];
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "简历库" }));
+    const historyList = await screen.findByLabelText("简历分析历史列表");
+    await user.click(within(historyList).getByRole("button", { name: "用于面试" }));
+    expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "返回修改简历" }));
+
+    expect(screen.getByLabelText(/目标岗位 JD/)).toHaveValue("历史 JD：负责 React 平台体验。");
   });
 
   it("删除简历分析记录经二次确认后从列表移除且不影响历史面试", async () => {
@@ -984,6 +1092,7 @@ describe("App", () => {
     const user = userEvent.setup();
     render(<App />);
 
+    await user.click(screen.getByRole("button", { name: "简历库" }));
     const historyList = await screen.findByLabelText("简历分析历史列表");
     await user.click(within(historyList).getByRole("button", { name: "删除前端工程师简历分析记录" }));
 
@@ -1057,7 +1166,23 @@ describe("App", () => {
     await user.clear(screen.getByLabelText("目标岗位"));
     await user.type(screen.getByLabelText("目标岗位"), "后端工程师");
 
-    expect(screen.getByText("简历或目标岗位已修改，需要重新解析简历")).toBeInTheDocument();
+    expect(screen.getByText("简历、目标岗位或目标岗位 JD 已修改，需要重新解析简历")).toBeInTheDocument();
+
+    window.history.back();
+    expect(await screen.findByRole("heading", { name: "需要先解析简历" })).toBeInTheDocument();
+  });
+
+  it("回退修改目标岗位 JD 后显式失效已生成的简历分析", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "解析简历" }));
+    expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "返回修改简历" }));
+    await user.type(screen.getByLabelText(/目标岗位 JD/), "新增 JD 要求");
+
+    expect(screen.getByText("简历、目标岗位或目标岗位 JD 已修改，需要重新解析简历")).toBeInTheDocument();
 
     window.history.back();
     expect(await screen.findByRole("heading", { name: "需要先解析简历" })).toBeInTheDocument();
