@@ -32,6 +32,7 @@ type MockRoundProgress = {
 let roundsProgressMock: MockRoundProgress[] = [];
 let sessionRoundKindMock = "peer_technical";
 let sessionRoundTitleMock = "同事技术面";
+let lastInterviewHasJdMock = false;
 let resumeAnalysisRecordsMock: {
   id: number;
   targetRole: string;
@@ -107,7 +108,13 @@ const historyPayloadMock = {
           { dimension: "技术深度", score: 4, rationale: "有一定深度。" },
           { dimension: "沟通结构化", score: 3, rationale: "结构可加强。" },
           { dimension: "岗位匹配度", score: 5, rationale: "匹配岗位。" }
-        ]
+        ],
+        jdMatchAnalysis: {
+          matchingEvidence: ["FastAPI 项目经历匹配岗位职责"],
+          roleGaps: ["高并发证据不足"],
+          projectExpressionImprovements: ["补充接口指标和排障结果"],
+          nextPracticeJdPriorities: ["练习复杂故障定位"]
+        }
       }
     },
     {
@@ -197,6 +204,7 @@ describe("App", () => {
     roundsProgressMock = [];
     sessionRoundKindMock = "peer_technical";
     sessionRoundTitleMock = "同事技术面";
+    lastInterviewHasJdMock = false;
     resumeAnalysisRecordsMock = [];
     answersHandlerOverride = null;
     deletedHistoryRecordIds = [];
@@ -399,6 +407,7 @@ describe("App", () => {
 
         if (url.endsWith("/interviews") && init?.method === "POST") {
           const body = JSON.parse(String(init.body));
+          lastInterviewHasJdMock = Boolean(body.targetJobDescription?.trim());
           if (body.sourceResumeAnalysisRecordId) {
             resumeAnalysisRecordsMock = resumeAnalysisRecordsMock.map((record) =>
               record.id === body.sourceResumeAnalysisRecordId
@@ -588,7 +597,15 @@ describe("App", () => {
                 { dimension: "技术深度", score: 3, rationale: "底层机制展开不足。" },
                 { dimension: "沟通结构化", score: 4, rationale: "表达有主线。" },
                 { dimension: "岗位匹配度", score: 4, rationale: "经历和岗位较匹配。" }
-              ]
+              ],
+              jdMatchAnalysis: lastInterviewHasJdMock
+                ? {
+                    matchingEvidence: ["项目经历匹配 JD 核心职责"],
+                    roleGaps: ["JD 要求的性能优化证据不足"],
+                    projectExpressionImprovements: ["补充技术取舍和量化结果"],
+                    nextPracticeJdPriorities: ["练习复杂场景排障表达"]
+                  }
+                : null
             }
           });
         }
@@ -731,6 +748,9 @@ describe("App", () => {
     expect(backendSummaryReview).toHaveTextContent("能讲清 API 职责");
     expect(backendSummaryReview).not.toHaveTextContent("第 1 题：API 边界清楚。");
     expect(backendSummaryReview).not.toHaveTextContent("示范性回答：先讲接口契约，再讲异常处理。");
+    const backendJdMatch = screen.getByLabelText("JD 匹配分析");
+    expect(backendJdMatch).toHaveTextContent("FastAPI 项目经历匹配岗位职责");
+    expect(backendJdMatch).toHaveTextContent("高并发证据不足");
 
     await user.click(screen.getByRole("button", { name: "前端工程师" }));
 
@@ -864,6 +884,7 @@ describe("App", () => {
     expect(reviewConversation).toHaveTextContent("第 1 个主问题：回答覆盖背景，但缺少量化结果。");
     expect(reviewConversation).toHaveTextContent("示范性回答：这是一种可参考表达，不是唯一标准答案。");
     expect(screen.getByLabelText("跨题总结复盘")).not.toHaveTextContent("示范性回答：这是一种可参考表达，不是唯一标准答案。");
+    expect(screen.queryByLabelText("JD 匹配分析")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "导出 Markdown" }));
 
@@ -905,6 +926,39 @@ describe("App", () => {
         })
       );
     });
+  });
+
+  it("带 JD 的面试复盘展示并导出 JD 匹配分析", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.type(screen.getByLabelText(/目标岗位 JD/), "职责：负责前端工程化。");
+    await user.click(screen.getByRole("button", { name: "解析简历" }));
+    expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "确认配置并开始面试" }));
+    expect(await screen.findByRole("heading", { name: "开始面试" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "手动结束" }));
+    await user.click(await screen.findByRole("button", { name: "生成复盘" }));
+
+    const jdMatch = await screen.findByLabelText("JD 匹配分析");
+    expect(jdMatch).toHaveTextContent("项目经历匹配 JD 核心职责");
+    expect(jdMatch).toHaveTextContent("JD 要求的性能优化证据不足");
+    expect(jdMatch).toHaveTextContent("补充技术取舍和量化结果");
+    expect(jdMatch).toHaveTextContent("练习复杂场景排障表达");
+    expect(screen.getByLabelText("六维能力评分雷达图")).toHaveTextContent("岗位匹配度");
+
+    await user.click(screen.getByRole("button", { name: "导出 Markdown" }));
+    const blob = vi.mocked(URL.createObjectURL).mock.calls.at(-1)?.[0] as Blob;
+    const markdown = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.addEventListener("load", () => resolve(String(reader.result ?? "")));
+      reader.addEventListener("error", () => reject(reader.error));
+      reader.readAsText(blob);
+    });
+    expect(markdown).toContain("## JD 匹配分析");
+    expect(markdown).toContain("### 匹配证据");
+    expect(markdown).toContain("项目经历匹配 JD 核心职责");
+    expect(markdown).toContain("### 下轮优先补齐的 JD 要求");
   });
 
   it("目标岗位 JD 超过 8000 字符时前端拦截解析并提示", async () => {

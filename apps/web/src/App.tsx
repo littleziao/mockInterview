@@ -196,6 +196,13 @@ type AbilityScore = {
   rationale: string;
 };
 
+type JDMatchAnalysis = {
+  matchingEvidence: string[];
+  roleGaps: string[];
+  projectExpressionImprovements: string[];
+  nextPracticeJdPriorities: string[];
+};
+
 type InterviewReview = {
   overallEvaluation: string;
   highlights: string[];
@@ -207,6 +214,7 @@ type InterviewReview = {
   learningFramework: string[];
   nextPracticeSuggestions: string[];
   abilityScores: AbilityScore[];
+  jdMatchAnalysis?: JDMatchAnalysis | null;
 };
 
 type HistoryRecord = {
@@ -1754,6 +1762,25 @@ function buildReviewMarkdown({
   styleLabel: string;
   targetRole: string;
 }) {
+  const jdMatchMarkdown = review.jdMatchAnalysis
+    ? [
+        "## JD 匹配分析",
+        "",
+        "### 匹配证据",
+        markdownList(review.jdMatchAnalysis.matchingEvidence),
+        "",
+        "### 暴露的岗位缺口",
+        markdownList(review.jdMatchAnalysis.roleGaps),
+        "",
+        "### 项目表达如何更贴 JD",
+        markdownList(review.jdMatchAnalysis.projectExpressionImprovements),
+        "",
+        "### 下轮优先补齐的 JD 要求",
+        markdownList(review.jdMatchAnalysis.nextPracticeJdPriorities),
+        ""
+      ]
+    : [];
+
   return [
     "# 模拟面试复盘",
     "",
@@ -1782,6 +1809,7 @@ function buildReviewMarkdown({
     "## 下一次练习建议",
     markdownList(review.nextPracticeSuggestions),
     "",
+    ...jdMatchMarkdown,
     "## 六维能力评分",
     review.abilityScores.map((score) => `- ${score.dimension}：${score.score}/5，${score.rationale}`).join("\n"),
     "",
@@ -2039,6 +2067,7 @@ function HistoryPage() {
                 <AbilityRadar scores={selectedRecord.review.abilityScores} />
               </div>
               <ReviewConversationSection review={selectedRecord.review} transcript={selectedRecord.transcript} />
+              <JDMatchAnalysisSection review={selectedRecord.review} />
               <div className="reviewGrid" aria-label="跨题总结复盘">
                 <ReviewSection items={selectedRecord.review.highlights} title="亮点" />
                 <ReviewSection items={selectedRecord.review.mainIssues} title="主要问题" />
@@ -2145,6 +2174,26 @@ function ReviewSection({ title, items }: { title: string; items: string[] }) {
         ))}
       </ul>
     </section>
+  );
+}
+
+function JDMatchAnalysisSection({ review }: { review: InterviewReview }) {
+  if (!review.jdMatchAnalysis) {
+    return null;
+  }
+
+  const analysis = review.jdMatchAnalysis;
+  return (
+    <div className="reviewGrid" aria-label="JD 匹配分析">
+      {analysis.matchingEvidence.length > 0 ? <ReviewSection items={analysis.matchingEvidence} title="匹配证据" /> : null}
+      {analysis.roleGaps.length > 0 ? <ReviewSection items={analysis.roleGaps} title="暴露的岗位缺口" /> : null}
+      {analysis.projectExpressionImprovements.length > 0 ? (
+        <ReviewSection items={analysis.projectExpressionImprovements} title="项目表达如何更贴 JD" />
+      ) : null}
+      {analysis.nextPracticeJdPriorities.length > 0 ? (
+        <ReviewSection items={analysis.nextPracticeJdPriorities} title="下轮优先补齐的 JD 要求" />
+      ) : null}
+    </div>
   );
 }
 
@@ -2326,6 +2375,7 @@ function ReviewPage({
       </div>
 
       <ReviewConversationSection review={review} transcript={session.transcript} />
+      <JDMatchAnalysisSection review={review} />
 
       <div className="reviewGrid" aria-label="跨题总结复盘">
         <ReviewSection items={review.highlights} title="亮点" />
