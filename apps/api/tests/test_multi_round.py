@@ -511,3 +511,61 @@ def test_action_prompt_single_round_has_no_round_section() -> None:
     )
     assert "当前轮次" not in prompt
     assert "你是这一轮的面试官" not in prompt
+
+
+VALID_JD_ANALYSIS = {
+    "core_responsibilities": ["负责前端工程化"],
+    "required_requirements": ["React", "TypeScript"],
+    "bonus_points": ["全栈经验"],
+    "likely_probes": ["性能优化取舍"],
+    "matching_evidence": ["项目与 JD 职责匹配"],
+    "role_gaps": ["JD 要求的某技术栈简历未体现"],
+}
+
+
+def _analysis_with_jd():
+    return validate_resume_analysis({**VALID_ANALYSIS, "jobDescriptionAnalysis": VALID_JD_ANALYSIS})
+
+
+def test_action_prompt_includes_jd_calibration_per_round() -> None:
+    provider = _provider()
+    analysis = _analysis_with_jd()
+    # 各轮次 JD 校准指令的独特短语（避开与 round focus 重叠的通用词）。
+    round_emphasis_phrases = [
+        ("peer_technical", "围绕 JD 技术栈"),
+        ("senior_technical", "JD 场景和岗位缺口"),
+        ("manager_comprehensive", "匹配证据"),
+        ("hr", "不做技术深挖"),
+    ]
+    for kind, phrase in round_emphasis_phrases:
+        prompt = provider._build_interview_action_prompt(
+            analysis=analysis,
+            target_role="前端工程师",
+            session=_session(kind),
+            starting=False,
+        )
+        # JD 分析上下文进入提问 prompt（验收 1）。
+        assert "岗位 JD 校准" in prompt
+        assert "负责前端工程化" in prompt
+        assert "岗位缺口" in prompt
+        # 仍以简历驱动，不逐条拷问 JD 要求（验收 2）。
+        assert "仍以简历驱动" in prompt
+        # 岗位缺口轻量澄清规则，复用 clarify（验收 3、4）。
+        assert "岗位缺口澄清规则" in prompt
+        assert "clarify" in prompt
+        # 按轮次差异化校准（验收 5）。
+        assert phrase in prompt
+
+
+def test_action_prompt_omits_jd_calibration_without_jd() -> None:
+    provider = _provider()
+    prompt = provider._build_interview_action_prompt(
+        analysis=_analysis(),
+        target_role="前端工程师",
+        session=_session("peer_technical"),
+        starting=False,
+    )
+    # 无 JD 时不注入 JD 校准段落，无 JD 面试流程零回归（验收 7）。
+    assert "岗位 JD 校准" not in prompt
+    assert "岗位缺口澄清规则" not in prompt
+    assert "负责前端工程化" not in prompt

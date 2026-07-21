@@ -20,14 +20,25 @@ from .interview_session import (
     current_main_question_index,
     validate_interviewer_action,
 )
-from .interview_rounds import get_round_template
+from .interview_rounds import (
+    ROUND_KIND_HR,
+    ROUND_KIND_MANAGER,
+    ROUND_KIND_PEER,
+    ROUND_KIND_SENIOR,
+    get_round_template,
+)
 from .interview_review import (
     ABILITY_DIMENSIONS,
     InterviewReview,
     InterviewReviewValidationError,
     validate_interview_review,
 )
-from .resume_analysis import ResumeAnalysis, ResumeAnalysisValidationError, validate_resume_analysis
+from .resume_analysis import (
+    JobDescriptionAnalysis,
+    ResumeAnalysis,
+    ResumeAnalysisValidationError,
+    validate_resume_analysis,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -667,6 +678,9 @@ class OpenAICompatibleProvider:
             else "压力面规则：语气更直接，追问证据、边界、取舍和结果；追问更紧凑，但不得羞辱、攻击或贬低候选人。"
         )
         round_section = self._round_prompt_section(session.round_kind, role="提问与追问")
+        jd_section = self._jd_calibration_section(
+            session.round_kind, analysis.job_description_analysis
+        )
 
         return (
             "请基于已确认的简历分析，以真人面试官视角产生下一步动作。"
@@ -679,6 +693,7 @@ class OpenAICompatibleProvider:
             f"\n面试风格：{'学习梳理面' if session.style == 'study' else '压力面'}"
             f"\n{style_rules}"
             f"{round_section}"
+            f"{jd_section}"
             f"\n当前允许动作：{allowed_actions}"
             f"\n目标岗位：{target_role or '未填写'}"
             f"\n背景摘要：{analysis.background_summary}"
@@ -729,6 +744,42 @@ class OpenAICompatibleProvider:
             f"\n当前轮次：{template.title}。"
             f"\n考察重点：{template.focus}。"
             f"\n你是这一轮的面试官，只从这一轮的视角{role}，不要越界到其他轮次的考察范围。"
+        )
+
+    def _jd_calibration_section(
+        self,
+        round_kind: str,
+        jd_analysis: JobDescriptionAnalysis | None,
+    ) -> str:
+        """有岗位 JD 分析时注入按轮次差异化的 JD 校准段落。
+
+        无 JD 分析返回空串，保持无 JD 面试 prompt 零回归。
+        """
+
+        if jd_analysis is None:
+            return ""
+
+        round_emphasis = {
+            ROUND_KIND_PEER: "本轮用 JD 必备要求和可能考察点校准基础技术与项目真实性追问，围绕 JD 技术栈展开。",
+            ROUND_KIND_SENIOR: "本轮用 JD 场景和岗位缺口校准技术深度、方案取舍与边界条件的追问。",
+            ROUND_KIND_MANAGER: "本轮用 JD 核心职责和匹配证据校准岗位匹配、业务理解与协作问题。",
+            ROUND_KIND_HR: "本轮只用 JD 轻量考察岗位理解和求职动机，不做技术深挖。",
+        }.get(
+            round_kind,
+            "用 JD 校准提问重点，但仍以简历项目、技术基础和真实经历为主要追问载体。",
+        )
+
+        return (
+            "\n岗位 JD 校准（可选增强，仍以简历驱动，不要逐条拷问 JD 要求）："
+            f"\n核心职责：{', '.join(jd_analysis.core_responsibilities) or '无'}"
+            f"\n必备要求：{', '.join(jd_analysis.required_requirements) or '无'}"
+            f"\n加分项：{', '.join(jd_analysis.bonus_points) or '无'}"
+            f"\n可能考察点：{', '.join(jd_analysis.likely_probes) or '无'}"
+            f"\n匹配证据：{', '.join(jd_analysis.matching_evidence) or '无'}"
+            f"\n岗位缺口（简历未直接体现）：{', '.join(jd_analysis.role_gaps) or '无'}"
+            f"\n{round_emphasis}"
+            "\n岗位缺口澄清规则：当问题涉及简历未直接体现的 JD 要求时，先用轻量澄清（clarify）确认候选人是否有相关经验，"
+            "不要假设候选人掌握这些技能并直接深挖细节；确认缺口后转向基础、迁移经验，或留待复盘建议。"
         )
 
 
