@@ -45,6 +45,26 @@ RESUME_ANALYSIS_JSON_EXAMPLE = {
     "low_priority_follow_up_topics": ["与目标岗位弱相关的零散经历"],
 }
 
+
+JOB_DESCRIPTION_ANALYSIS_JSON_EXAMPLE = {
+    "core_responsibilities": ["负责前端工程化和组件库建设", "主导核心业务模块的方案设计与落地"],
+    "required_requirements": ["熟练掌握 React 和 TypeScript", "理解前端构建与性能优化"],
+    "bonus_points": ["有本地 AI 工具或全栈经验", "具备团队协作和代码评审习惯"],
+    "likely_probes": ["工程化取舍", "复杂状态管理方案", "性能瓶颈定位"],
+    "matching_evidence": ["简历项目与 JD 职责重合的前端工程化经验", "已有结构化输出校验实践"],
+    "role_gaps": ["JD 要求的某项技术栈在简历中没有直接体现"],
+}
+
+FAKE_INFERRED_TARGET_ROLE = "前端工程师（推断）"
+FAKE_JD_ANALYSIS = {
+    "core_responsibilities": ["围绕目标岗位 JD 校准的重点职责推进练习"],
+    "required_requirements": ["JD 标注的必备技术能力"],
+    "bonus_points": ["JD 中可作为加分项突出的经历"],
+    "likely_probes": ["JD 中可能被追问的职责与技术点"],
+    "matching_evidence": ["简历项目与 JD 职责匹配的部分"],
+    "role_gaps": ["JD 要求但简历未直接体现的部分"],
+}
+
 JD_CALIBRATED_TARGET_ROLE_NOTE = "目标岗位 JD 已作为校准输入，后续面试应优先核对岗位职责、技术要求和简历匹配证据。"
 
 
@@ -209,23 +229,26 @@ class FakeAIProvider:
             return validate_resume_analysis({"background_summary": ""})
 
         first_line = next((line.strip("# ").strip() for line in resume_markdown.splitlines() if line.strip()), "候选人")
-        return validate_resume_analysis(
-            {
-                "background_summary": f"{first_line} 具备项目交付和工程实现经验。",
-                "key_projects": ["基于 Markdown 简历识别出的核心项目"],
-                "technical_stack": ["TypeScript", "React", "FastAPI", "SQLite"],
-                "follow_up_topics": ["项目职责边界", "技术选型取舍", "复杂问题排查"],
-                "risk_points": ["需要进一步验证项目深度"],
-                "unclear_points": ["部分项目结果指标不够明确"],
-                "target_role_notes": (
-                    JD_CALIBRATED_TARGET_ROLE_NOTE
-                    if target_job_description
-                    else target_role or "未填写目标岗位，后续面试将根据简历推断方向。"
-                ),
-                "focus_topics": ["项目经验表达", "技术深度"],
-                "low_priority_follow_up_topics": ["与目标岗位弱相关的零散经历"],
-            }
-        )
+        analysis_payload: dict[str, object] = {
+            "background_summary": f"{first_line} 具备项目交付和工程实现经验。",
+            "key_projects": ["基于 Markdown 简历识别出的核心项目"],
+            "technical_stack": ["TypeScript", "React", "FastAPI", "SQLite"],
+            "follow_up_topics": ["项目职责边界", "技术选型取舍", "复杂问题排查"],
+            "risk_points": ["需要进一步验证项目深度"],
+            "unclear_points": ["部分项目结果指标不够明确"],
+            "target_role_notes": (
+                JD_CALIBRATED_TARGET_ROLE_NOTE
+                if target_job_description
+                else target_role or "未填写目标岗位，后续面试将根据简历推断方向。"
+            ),
+            "focus_topics": ["项目经验表达", "技术深度"],
+            "low_priority_follow_up_topics": ["与目标岗位弱相关的零散经历"],
+        }
+        if not target_role.strip():
+            analysis_payload["inferred_target_role"] = FAKE_INFERRED_TARGET_ROLE
+        if target_job_description.strip():
+            analysis_payload["job_description_analysis"] = FAKE_JD_ANALYSIS
+        return validate_resume_analysis(analysis_payload)
 
     def generate_next_interviewer_action(
         self,
@@ -385,6 +408,13 @@ class OpenAICompatibleProvider:
                                 "technical_stack, follow_up_topics, risk_points, unclear_points, "
                                 "target_role_notes, focus_topics, low_priority_follow_up_topics。"
                                 "所有列表字段必须返回字符串数组，不要返回字符串、Markdown 列表或解释文字。"
+                                "\n当目标岗位为空时，额外返回 inferred_target_role 字符串，"
+                                "从简历或目标岗位 JD 推断一个简洁的岗位标题。"
+                                "\n当目标岗位 JD 不为空时，额外返回 job_description_analysis 对象，"
+                                "包含 core_responsibilities、required_requirements、bonus_points、"
+                                "likely_probes、matching_evidence、role_gaps 六个字符串数组字段，"
+                                "必须基于目标岗位 JD 原文提炼，不得编造；目标岗位 JD 为空时不要返回该对象。"
+                                f"\n岗位 JD 分析示例：\n{json.dumps(JOB_DESCRIPTION_ANALYSIS_JSON_EXAMPLE, ensure_ascii=False)}"
                                 "\nJSON 示例："
                                 f"\n{json.dumps(RESUME_ANALYSIS_JSON_EXAMPLE, ensure_ascii=False)}"
                                 f"\n目标岗位：{target_role or '未填写'}"

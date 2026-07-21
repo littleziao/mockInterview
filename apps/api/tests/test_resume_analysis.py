@@ -176,6 +176,16 @@ def test_resume_analysis_generation_accepts_and_saves_target_job_description(
     assert list_response.json()["records"][0]["hasTargetJobDescription"] is True
     assert "targetJobDescription" not in list_response.json()["records"][0]
     assert detail_response.json()["targetJobDescription"] == target_job_description
+    # 有 JD 时返回结构化岗位 JD 分析；目标岗位已填则不返回推断岗位。
+    assert response.json()["inferredTargetRole"] is None
+    jd_analysis = response.json()["jobDescriptionAnalysis"]
+    assert jd_analysis is not None
+    assert jd_analysis["coreResponsibilities"] == ["围绕目标岗位 JD 校准的重点职责推进练习"]
+    assert jd_analysis["requiredRequirements"] == ["JD 标注的必备技术能力"]
+    assert jd_analysis["bonusPoints"] == ["JD 中可作为加分项突出的经历"]
+    assert jd_analysis["likelyProbes"] == ["JD 中可能被追问的职责与技术点"]
+    assert jd_analysis["matchingEvidence"] == ["简历项目与 JD 职责匹配的部分"]
+    assert jd_analysis["roleGaps"] == ["JD 要求但简历未直接体现的部分"]
 
 
 def test_resume_analysis_generation_rejects_overlong_target_job_description(
@@ -469,3 +479,156 @@ def test_deleting_resume_analysis_record_keeps_linked_interview_usable(
     assert read_interview(interview_id) is not None
     assert read_interview(interview_id).source_resume_analysis_record_id == source_record.id
     assert read_interview(interview_id).target_job_description == "JD 快照：React 平台体验。"
+
+
+def test_resume_analysis_generation_omits_jd_analysis_without_jd(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        response = client.post(
+            "/resume-analyses/generate",
+            json={
+                "resumeMarkdown": "# 张三\n\n## 项目经历\n- Mock Interview",
+                "targetRole": "前端工程师",
+            },
+        )
+
+    assert response.status_code == 200
+    # 未提供 JD 时不编造岗位 JD 分析，也不返回推断岗位。
+    assert response.json()["jobDescriptionAnalysis"] is None
+    assert response.json()["inferredTargetRole"] is None
+
+
+def test_resume_analysis_generation_infers_target_role_when_blank(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        response = client.post(
+            "/resume-analyses/generate",
+            json={
+                "resumeMarkdown": "# 张三\n\n## 项目经历\n- Mock Interview",
+                "targetRole": "",
+                "targetJobDescription": "职责：负责前端工程化和组件库建设。",
+            },
+        )
+
+    assert response.status_code == 200
+    # 只提供 JD、未填目标岗位时，返回推断岗位标题，同时仍生成 JD 分析。
+    assert response.json()["inferredTargetRole"] == "前端工程师（推断）"
+    assert response.json()["jobDescriptionAnalysis"] is not None
+
+
+def test_validate_resume_analysis_tolerates_job_description_analysis_shapes() -> None:
+    # camelCase 与中文别名都能归一为 JD 分析字段；空白推断岗位归一为 None。
+    analysis = validate_resume_analysis(
+        {
+            "background_summary": "摘要",
+            "key_projects": ["项目"],
+            "technical_stack": ["React"],
+            "follow_up_topics": ["追问"],
+            "jobDescriptionAnalysis": {
+                "coreResponsibilities": ["职责A", "职责B"],
+                "必备要求": "TypeScript\nReact",
+                "加分项": ["全栈"],
+            },
+            "inferredTargetRole": "  ",
+        }
+    )
+    assert analysis.job_description_analysis is not None
+    assert analysis.job_description_analysis.core_responsibilities == ["职责A", "职责B"]
+    assert analysis.job_description_analysis.required_requirements == ["TypeScript", "React"]
+    assert analysis.job_description_analysis.bonus_points == ["全栈"]
+    assert analysis.inferred_target_role is None
+
+    # JD 分析子对象不是 dict 时整体丢弃，主分析不受影响。
+    invalid = validate_resume_analysis(
+        {
+            "background_summary": "摘要",
+            "key_projects": ["项目"],
+            "technical_stack": ["React"],
+            "follow_up_topics": ["追问"],
+            "岗位 JD 分析": "不是对象",
+        }
+    )
+    assert invalid.job_description_analysis is None
+
+    # JD 分析子对象六个字段全空时视为无 JD 分析。
+    empty = validate_resume_analysis(
+        {
+            "background_summary": "摘要",
+            "key_projects": ["项目"],
+            "technical_stack": ["React"],
+            "follow_up_topics": ["追问"],
+            "jobDescriptionAnalysis": {},
+        }
+    )
+    assert empty.job_description_analysis is None
+
+    # 非空推断岗位保留。
+    inferred = validate_resume_analysis(
+        {
+            "background_summary": "摘要",
+            "key_projects": ["项目"],
+            "technical_stack": ["React"],
+            "follow_up_topics": ["追问"],
+            "inferredTargetRole": "全栈工程师",
+        }
+    )
+    assert inferred.inferred_target_role == "全栈工程师"
+
+
+def test_confirming_interview_persists_jd_analysis_and_inferred_target_role(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        response = client.post(
+            "/interviews",
+            json={
+                "resumeMarkdown": "# 张三\n\n- Mock Interview",
+                "targetRole": "",
+                "targetJobDescription": "职责：前端工程化。",
+                "interviewMode": "single_round",
+                "analysis": {
+                    "background_summary": "用户确认的摘要",
+                    "key_projects": ["Mock Interview"],
+                    "technical_stack": ["React"],
+                    "follow_up_topics": ["项目职责"],
+                    "risk_points": [],
+                    "unclear_points": [],
+                    "target_role_notes": "",
+                    "focus_topics": [],
+                    "low_priority_follow_up_topics": [],
+                    "inferred_target_role": "前端工程师（推断）",
+                    "job_description_analysis": {
+                        "core_responsibilities": ["前端工程化"],
+                        "required_requirements": ["React", "TypeScript"],
+                        "bonus_points": ["全栈"],
+                        "likely_probes": ["性能优化"],
+                        "matching_evidence": ["项目匹配"],
+                        "role_gaps": ["某技术栈缺失"],
+                    },
+                },
+            },
+        )
+        read_response = client.get(f"/interviews/{response.json()['id']}")
+
+    interview = read_interview(response.json()["id"])
+
+    assert response.status_code == 200
+    assert read_response.status_code == 200
+    analysis_payload = read_response.json()["analysis"]
+    assert analysis_payload["inferredTargetRole"] == "前端工程师（推断）"
+    assert analysis_payload["jobDescriptionAnalysis"]["coreResponsibilities"] == ["前端工程化"]
+    assert analysis_payload["jobDescriptionAnalysis"]["requiredRequirements"] == ["React", "TypeScript"]
+    assert analysis_payload["jobDescriptionAnalysis"]["roleGaps"] == ["某技术栈缺失"]
+    assert interview.analysis.inferred_target_role == "前端工程师（推断）"
+    assert interview.analysis.job_description_analysis is not None
+    assert interview.analysis.job_description_analysis.required_requirements == ["React", "TypeScript"]

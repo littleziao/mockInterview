@@ -36,7 +36,50 @@ FIELD_ALIASES = {
         "不希望重点追问的内容",
         "低优先级追问方向",
     ),
+    "inferred_target_role": (
+        "inferred_target_role",
+        "inferredTargetRole",
+        "inferred_role",
+        "推断目标岗位",
+        "推断岗位",
+    ),
 }
+
+JD_ANALYSIS_FIELD_ALIASES = {
+    "core_responsibilities": (
+        "core_responsibilities",
+        "coreResponsibilities",
+        "responsibilities",
+        "核心职责",
+    ),
+    "required_requirements": (
+        "required_requirements",
+        "requiredRequirements",
+        "requirements",
+        "必备要求",
+    ),
+    "bonus_points": ("bonus_points", "bonusPoints", "nice_to_haves", "加分项"),
+    "likely_probes": (
+        "likely_probes",
+        "likelyProbes",
+        "likely_interview_probes",
+        "可能考察点",
+    ),
+    "matching_evidence": (
+        "matching_evidence",
+        "matchingEvidence",
+        "匹配证据",
+        "简历与 JD 的匹配",
+    ),
+    "role_gaps": ("role_gaps", "roleGaps", "gaps", "岗位缺口"),
+}
+
+JD_ANALYSIS_OBJECT_ALIASES = (
+    "job_description_analysis",
+    "jobDescriptionAnalysis",
+    "岗位 JD 分析",
+    "岗位JD分析",
+)
 
 LIST_FIELDS = {
     "key_projects",
@@ -49,6 +92,15 @@ LIST_FIELDS = {
 }
 
 
+class JobDescriptionAnalysis(BaseModel):
+    core_responsibilities: list[str] = Field(default_factory=list)
+    required_requirements: list[str] = Field(default_factory=list)
+    bonus_points: list[str] = Field(default_factory=list)
+    likely_probes: list[str] = Field(default_factory=list)
+    matching_evidence: list[str] = Field(default_factory=list)
+    role_gaps: list[str] = Field(default_factory=list)
+
+
 class ResumeAnalysis(BaseModel):
     background_summary: str = Field(min_length=1)
     key_projects: list[str] = Field(min_length=1)
@@ -59,6 +111,8 @@ class ResumeAnalysis(BaseModel):
     target_role_notes: str = ""
     focus_topics: list[str] = Field(default_factory=list)
     low_priority_follow_up_topics: list[str] = Field(default_factory=list)
+    inferred_target_role: str | None = None
+    job_description_analysis: JobDescriptionAnalysis | None = None
 
 
 class ResumeAnalysisValidationError(ValueError):
@@ -125,6 +179,21 @@ def _coerce_list(value: object) -> list[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
+def _normalize_job_description_analysis(sub_data: object) -> dict[str, list[str]] | None:
+    if not isinstance(sub_data, dict):
+        return None
+
+    normalized: dict[str, list[str]] = {}
+    for field_name, aliases in JD_ANALYSIS_FIELD_ALIASES.items():
+        value = next((sub_data[alias] for alias in aliases if alias in sub_data), None)
+        normalized[field_name] = _coerce_list(value)
+
+    if not any(normalized.values()):
+        return None
+
+    return normalized
+
+
 def _normalize_resume_analysis_data(data: object) -> object:
     unwrapped_data = _unwrap_analysis_payload(data)
     if not isinstance(unwrapped_data, dict):
@@ -137,6 +206,17 @@ def _normalize_resume_analysis_data(data: object) -> object:
             normalized[field_name] = _coerce_list(value)
         elif value is not None:
             normalized[field_name] = str(value).strip()
+
+    jd_sub_data = next(
+        (unwrapped_data[alias] for alias in JD_ANALYSIS_OBJECT_ALIASES if alias in unwrapped_data),
+        None,
+    )
+    jd_analysis = _normalize_job_description_analysis(jd_sub_data)
+    if jd_analysis is not None:
+        normalized["job_description_analysis"] = jd_analysis
+
+    if normalized.get("inferred_target_role") == "":
+        normalized["inferred_target_role"] = None
 
     return normalized
 

@@ -161,6 +161,15 @@ class ProviderTestResultPayload(BaseModel):
     message: str
 
 
+class JobDescriptionAnalysisPayload(BaseModel):
+    core_responsibilities: list[str] = Field(serialization_alias="coreResponsibilities")
+    required_requirements: list[str] = Field(serialization_alias="requiredRequirements")
+    bonus_points: list[str] = Field(serialization_alias="bonusPoints")
+    likely_probes: list[str] = Field(serialization_alias="likelyProbes")
+    matching_evidence: list[str] = Field(serialization_alias="matchingEvidence")
+    role_gaps: list[str] = Field(serialization_alias="roleGaps")
+
+
 class ResumeAnalysisPayload(BaseModel):
     background_summary: str = Field(serialization_alias="backgroundSummary")
     key_projects: list[str] = Field(serialization_alias="keyProjects")
@@ -171,6 +180,10 @@ class ResumeAnalysisPayload(BaseModel):
     target_role_notes: str = Field(serialization_alias="targetRoleNotes")
     focus_topics: list[str] = Field(serialization_alias="focusTopics")
     low_priority_follow_up_topics: list[str] = Field(serialization_alias="lowPriorityFollowUpTopics")
+    inferred_target_role: str | None = Field(default=None, serialization_alias="inferredTargetRole")
+    job_description_analysis: JobDescriptionAnalysisPayload | None = Field(
+        default=None, serialization_alias="jobDescriptionAnalysis"
+    )
 
 
 class GenerateResumeAnalysisPayload(BaseModel):
@@ -263,6 +276,18 @@ def _to_public_payload(store: AIProviderSettingsStore) -> PublicAIProviderStoreP
 
 
 def _to_resume_analysis_payload(analysis: ResumeAnalysis) -> ResumeAnalysisPayload:
+    job_description_analysis = (
+        JobDescriptionAnalysisPayload(
+            core_responsibilities=analysis.job_description_analysis.core_responsibilities,
+            required_requirements=analysis.job_description_analysis.required_requirements,
+            bonus_points=analysis.job_description_analysis.bonus_points,
+            likely_probes=analysis.job_description_analysis.likely_probes,
+            matching_evidence=analysis.job_description_analysis.matching_evidence,
+            role_gaps=analysis.job_description_analysis.role_gaps,
+        )
+        if analysis.job_description_analysis is not None
+        else None
+    )
     return ResumeAnalysisPayload(
         background_summary=analysis.background_summary,
         key_projects=analysis.key_projects,
@@ -273,6 +298,8 @@ def _to_resume_analysis_payload(analysis: ResumeAnalysis) -> ResumeAnalysisPaylo
         target_role_notes=analysis.target_role_notes,
         focus_topics=analysis.focus_topics,
         low_priority_follow_up_topics=analysis.low_priority_follow_up_topics,
+        inferred_target_role=analysis.inferred_target_role,
+        job_description_analysis=job_description_analysis,
     )
 
 
