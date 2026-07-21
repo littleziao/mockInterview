@@ -632,3 +632,119 @@ def test_confirming_interview_persists_jd_analysis_and_inferred_target_role(
     assert interview.analysis.inferred_target_role == "前端工程师（推断）"
     assert interview.analysis.job_description_analysis is not None
     assert interview.analysis.job_description_analysis.required_requirements == ["React", "TypeScript"]
+
+
+def test_resume_analysis_record_detail_exposes_job_description_analysis(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        client.post(
+            "/resume-analyses/generate",
+            json={
+                "resumeMarkdown": "# 张三\n\n## 项目经历\n- Mock Interview",
+                "targetRole": "前端工程师",
+                "targetJobDescription": "职责：负责前端工程化。",
+            },
+        )
+        record_id = list_resume_analysis_records()[0].id
+        response = client.get(f"/resume-analysis-records/{record_id}")
+
+    assert response.status_code == 200
+    # 历史详情暴露完整目标岗位 JD 与结构化岗位 JD 分析。
+    assert response.json()["targetJobDescription"] == "职责：负责前端工程化。"
+    analysis = response.json()["analysis"]
+    assert analysis["jobDescriptionAnalysis"] is not None
+    assert analysis["jobDescriptionAnalysis"]["coreResponsibilities"] == ["围绕目标岗位 JD 校准的重点职责推进练习"]
+    assert analysis["jobDescriptionAnalysis"]["roleGaps"] == ["JD 要求但简历未直接体现的部分"]
+    assert analysis["inferredTargetRole"] is None
+
+
+def test_confirming_interview_from_jd_record_updates_confirmed_jd_analysis(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        client.post(
+            "/resume-analyses/generate",
+            json={
+                "resumeMarkdown": "# 初始简历\n\n- Mock Interview",
+                "targetRole": "前端工程师",
+                "targetJobDescription": "初始 JD",
+            },
+        )
+        source_record = list_resume_analysis_records()[0]
+
+        response = client.post(
+            "/interviews",
+            json={
+                "resumeMarkdown": "# 确认版简历\n\n- Mock Interview",
+                "targetRole": "资深前端工程师",
+                "targetJobDescription": "确认版 JD：负责复杂前端工程。",
+                "interviewMode": "single_round",
+                "sourceResumeAnalysisRecordId": source_record.id,
+                "analysis": {
+                    "background_summary": "用户确认后的背景摘要",
+                    "key_projects": ["Mock Interview"],
+                    "technical_stack": ["React"],
+                    "follow_up_topics": ["项目职责"],
+                    "risk_points": [],
+                    "unclear_points": [],
+                    "target_role_notes": "",
+                    "focus_topics": [],
+                    "low_priority_follow_up_topics": [],
+                    "inferred_target_role": None,
+                    "job_description_analysis": {
+                        "core_responsibilities": ["用户确认的核心职责"],
+                        "required_requirements": ["React", "TypeScript"],
+                        "bonus_points": [],
+                        "likely_probes": ["性能优化"],
+                        "matching_evidence": [],
+                        "role_gaps": ["用户确认的缺口"],
+                    },
+                },
+            },
+        )
+        refreshed_record = list_resume_analysis_records()[0]
+
+    assert response.status_code == 200
+    # 来源记录更新为确认版本，包含目标岗位 JD 与岗位 JD 分析。
+    assert refreshed_record.target_job_description == "确认版 JD：负责复杂前端工程。"
+    assert refreshed_record.analysis.job_description_analysis is not None
+    assert refreshed_record.analysis.job_description_analysis.core_responsibilities == ["用户确认的核心职责"]
+    assert refreshed_record.analysis.job_description_analysis.role_gaps == ["用户确认的缺口"]
+
+
+def test_repeated_jd_resume_analysis_generation_creates_independent_records(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        for _ in range(2):
+            response = client.post(
+                "/resume-analyses/generate",
+                json={
+                    "resumeMarkdown": "# 张三\n\n## 项目经历\n- Mock Interview",
+                    "targetRole": "前端工程师",
+                    "targetJobDescription": "职责：负责前端工程化。",
+                },
+            )
+            assert response.status_code == 200
+
+    records = list_resume_analysis_records()
+    # 重复解析同一份 JD 简历仍创建独立记录，且都携带岗位 JD 分析。
+    assert len(records) == 2
+    assert records[0].id != records[1].id
+    assert records[0].target_job_description == "职责：负责前端工程化。"
+    assert records[1].target_job_description == "职责：负责前端工程化。"
+    assert records[0].analysis.job_description_analysis is not None
+    assert records[1].analysis.job_description_analysis is not None

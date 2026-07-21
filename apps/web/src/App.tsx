@@ -2656,6 +2656,47 @@ function ResumeAnalysisDetail({
           <p className="emptyInlineState">未提供目标岗位 JD</p>
         )}
       </section>
+      {analysis.jobDescriptionAnalysis ? (
+        <section className="resumeAnalysisDetailBlock" aria-labelledby="resume-detail-jd-analysis-title">
+          <h3 id="resume-detail-jd-analysis-title">岗位 JD 分析</h3>
+          {analysis.jobDescriptionAnalysis.coreResponsibilities.length > 0 ? (
+            <div className="resumeAnalysisDetailField">
+              <span>核心职责</span>
+              <p>{analysis.jobDescriptionAnalysis.coreResponsibilities.join("、")}</p>
+            </div>
+          ) : null}
+          {analysis.jobDescriptionAnalysis.requiredRequirements.length > 0 ? (
+            <div className="resumeAnalysisDetailField">
+              <span>必备要求</span>
+              <p>{analysis.jobDescriptionAnalysis.requiredRequirements.join("、")}</p>
+            </div>
+          ) : null}
+          {analysis.jobDescriptionAnalysis.bonusPoints.length > 0 ? (
+            <div className="resumeAnalysisDetailField">
+              <span>加分项</span>
+              <p>{analysis.jobDescriptionAnalysis.bonusPoints.join("、")}</p>
+            </div>
+          ) : null}
+          {analysis.jobDescriptionAnalysis.likelyProbes.length > 0 ? (
+            <div className="resumeAnalysisDetailField">
+              <span>可能考察点</span>
+              <p>{analysis.jobDescriptionAnalysis.likelyProbes.join("、")}</p>
+            </div>
+          ) : null}
+          {analysis.jobDescriptionAnalysis.matchingEvidence.length > 0 ? (
+            <div className="resumeAnalysisDetailField">
+              <span>匹配证据</span>
+              <p>{analysis.jobDescriptionAnalysis.matchingEvidence.join("、")}</p>
+            </div>
+          ) : null}
+          {analysis.jobDescriptionAnalysis.roleGaps.length > 0 ? (
+            <div className="resumeAnalysisDetailField">
+              <span>岗位缺口</span>
+              <p>{analysis.jobDescriptionAnalysis.roleGaps.join("、")}</p>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
       <section className="resumeAnalysisDetailBlock" aria-labelledby="resume-detail-analysis-title">
         <h3 id="resume-detail-analysis-title">完整结构化简历分析</h3>
         <div className="resumeAnalysisDetailField">

@@ -418,7 +418,18 @@ describe("App", () => {
                       unclearPoints: body.analysis.unclear_points,
                       targetRoleNotes: body.analysis.target_role_notes,
                       focusTopics: body.analysis.focus_topics,
-                      lowPriorityFollowUpTopics: body.analysis.low_priority_follow_up_topics
+                      lowPriorityFollowUpTopics: body.analysis.low_priority_follow_up_topics,
+                      inferredTargetRole: body.analysis.inferred_target_role ?? null,
+                      jobDescriptionAnalysis: body.analysis.job_description_analysis
+                        ? {
+                            coreResponsibilities: body.analysis.job_description_analysis.core_responsibilities,
+                            requiredRequirements: body.analysis.job_description_analysis.required_requirements,
+                            bonusPoints: body.analysis.job_description_analysis.bonus_points,
+                            likelyProbes: body.analysis.job_description_analysis.likely_probes,
+                            matchingEvidence: body.analysis.job_description_analysis.matching_evidence,
+                            roleGaps: body.analysis.job_description_analysis.role_gaps
+                          }
+                        : null
                     },
                     keyProjects: body.analysis.key_projects,
                     technicalStack: body.analysis.technical_stack,
@@ -1075,6 +1086,106 @@ describe("App", () => {
     );
     expect(await screen.findByRole("heading", { name: "开始面试" })).toBeInTheDocument();
     expect(screen.getByText("先做个自我介绍吧。")).toBeInTheDocument();
+  });
+
+  it("简历库列表标注含 JD 记录并在详情展示岗位 JD 分析", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.type(screen.getByLabelText(/目标岗位 JD/), "职责：负责前端工程化。");
+    await user.click(screen.getByRole("button", { name: "解析简历" }));
+    expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "简历库" }));
+    const historyList = await screen.findByLabelText("简历分析历史列表");
+    // 列表标注含 JD，但不展开 JD 全文。
+    expect(historyList).toHaveTextContent("含目标岗位 JD");
+    expect(historyList).toHaveTextContent("含 JD");
+    expect(historyList).not.toHaveTextContent("职责：负责前端工程化。");
+
+    await user.click(within(historyList).getByRole("button", { name: "查看详情" }));
+    const detail = await screen.findByLabelText("简历分析记录详情");
+    expect(detail).toHaveTextContent("完整目标岗位 JD");
+    expect(detail).toHaveTextContent("职责：负责前端工程化。");
+    expect(detail).toHaveTextContent("岗位 JD 分析");
+    expect(detail).toHaveTextContent("负责前端工程化");
+    expect(detail).toHaveTextContent("JD 要求的某技术栈缺失");
+  });
+
+  it("复用含 JD 的记录预填 JD 分析，确认后回写确认版本", async () => {
+    resumeAnalysisRecordsMock = [
+      {
+        id: 42,
+        targetRole: "前端工程师",
+        targetJobDescription: "历史 JD：负责前端工程化。",
+        hasTargetJobDescription: true,
+        summary: "历史背景摘要",
+        resumeMarkdown: "# 历史简历",
+        analysis: {
+          backgroundSummary: "历史背景摘要",
+          keyProjects: ["历史项目"],
+          technicalStack: ["React"],
+          followUpTopics: ["历史追问"],
+          riskPoints: [],
+          unclearPoints: [],
+          targetRoleNotes: "",
+          focusTopics: [],
+          lowPriorityFollowUpTopics: [],
+          jobDescriptionAnalysis: {
+            coreResponsibilities: ["历史核心职责"],
+            requiredRequirements: ["React"],
+            bonusPoints: [],
+            likelyProbes: [],
+            matchingEvidence: [],
+            roleGaps: ["历史岗位缺口"]
+          }
+        },
+        keyProjects: ["历史项目"],
+        technicalStack: ["React"],
+        followUpTopics: ["历史追问"],
+        createdAt: "2026-07-03 09:00:00",
+        lastUsedAt: "2026-07-03 09:00:00",
+        useCount: 0
+      }
+    ];
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "简历库" }));
+    const historyList = await screen.findByLabelText("简历分析历史列表");
+    await user.click(within(historyList).getByRole("button", { name: "用于面试" }));
+
+    // 复用回到确认页（不跳过到面试问题），预填岗位 JD 分析与 JD 原文折叠。
+    expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/interviews/7/sessions",
+      expect.objectContaining({ method: "POST" })
+    );
+    const jdGrid = await screen.findByLabelText("岗位 JD 分析");
+    expect(jdGrid).toHaveTextContent("历史核心职责");
+    expect(jdGrid).toHaveTextContent("历史岗位缺口");
+    expect(screen.getByRole("button", { name: "查看 JD 原文" })).toBeInTheDocument();
+
+    // 编辑 JD 分析后确认，回写来源记录为确认版本。
+    await user.clear(screen.getByLabelText("核心职责"));
+    await user.type(screen.getByLabelText("核心职责"), "确认版核心职责");
+    await user.click(screen.getByRole("button", { name: "确认配置并开始面试" }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        "http://127.0.0.1:8000/interviews",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining('"sourceResumeAnalysisRecordId":42')
+        })
+      );
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/interviews",
+      expect.objectContaining({
+        body: expect.stringContaining('"core_responsibilities":["确认版核心职责"]')
+      })
+    );
   });
 
   it("可在简历库展开详情查看完整 Markdown 简历和结构化分析", async () => {
