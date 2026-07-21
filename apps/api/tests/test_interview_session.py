@@ -48,23 +48,35 @@ def _configure_provider(client: TestClient, base_url: str = "fake://success") ->
     )
 
 
-def _create_confirmed_interview(client: TestClient) -> int:
+def _create_confirmed_interview(client: TestClient, *, with_jd: bool = False) -> int:
+    analysis = {
+        "background_summary": "候选人有全栈项目经验",
+        "key_projects": ["Mock Interview"],
+        "technical_stack": ["React", "FastAPI"],
+        "follow_up_topics": ["项目职责", "技术取舍"],
+        "risk_points": ["指标不够明确"],
+        "unclear_points": [],
+        "target_role_notes": "前端工程师",
+        "focus_topics": ["项目复盘"],
+        "low_priority_follow_up_topics": ["弱相关经历"],
+    }
+    if with_jd:
+        analysis["job_description_analysis"] = {
+            "core_responsibilities": ["负责前端工程化"],
+            "required_requirements": ["React", "TypeScript"],
+            "bonus_points": [],
+            "likely_probes": ["性能优化"],
+            "matching_evidence": ["项目匹配"],
+            "role_gaps": ["某技术栈缺失"],
+        }
+
     response = client.post(
         "/interviews",
         json={
             "resumeMarkdown": VALID_RESUME,
             "targetRole": "前端工程师",
-            "analysis": {
-                "background_summary": "候选人有全栈项目经验",
-                "key_projects": ["Mock Interview"],
-                "technical_stack": ["React", "FastAPI"],
-                "follow_up_topics": ["项目职责", "技术取舍"],
-                "risk_points": ["指标不够明确"],
-                "unclear_points": [],
-                "target_role_notes": "前端工程师",
-                "focus_topics": ["项目复盘"],
-                "low_priority_follow_up_topics": ["弱相关经历"],
-            },
+            "targetJobDescription": "职责：负责前端工程化。" if with_jd else "",
+            "analysis": analysis,
         },
     )
     assert response.status_code == 200
@@ -320,6 +332,48 @@ def test_user_confirms_review_generation_after_interview_ends(monkeypatch, tmp_p
     ]
 
 
+def test_jd_interview_review_includes_and_persists_jd_match_analysis(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        interview_id = _create_confirmed_interview(client, with_jd=True)
+        session = _start_session(client, interview_id)
+        _answer(client, session["id"], "我负责前端工程化和接口协作。")
+        client.post(f"/interview-sessions/{session['id']}/end")
+        review_response = client.post(f"/interview-sessions/{session['id']}/review")
+        reloaded = client.get(f"/interview-sessions/{session['id']}")
+        history = client.get("/history")
+
+    assert review_response.status_code == 200
+    jd_match = review_response.json()["review"]["jdMatchAnalysis"]
+    assert jd_match["matchingEvidence"]
+    assert jd_match["roleGaps"]
+    assert jd_match["projectExpressionImprovements"]
+    assert jd_match["nextPracticeJdPriorities"]
+    assert reloaded.json()["review"]["jdMatchAnalysis"] == jd_match
+    assert history.json()["records"][0]["review"]["jdMatchAnalysis"] == jd_match
+    # JD 匹配分析不替代既有 6 维能力评分或增加趋势维度。
+    assert len(review_response.json()["review"]["abilityScores"]) == len(ABILITY_DIMENSIONS)
+    assert [trend["dimension"] for trend in history.json()["trends"]] == list(ABILITY_DIMENSIONS)
+
+
+def test_no_jd_interview_review_omits_jd_match_analysis(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        interview_id = _create_confirmed_interview(client)
+        session = _start_session(client, interview_id)
+        client.post(f"/interview-sessions/{session['id']}/end")
+        review_response = client.post(f"/interview-sessions/{session['id']}/review")
+
+    assert review_response.status_code == 200
+    assert review_response.json()["review"]["jdMatchAnalysis"] is None
+
+
 def test_invalid_review_structure_returns_502_without_ending_session(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
     monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
@@ -503,6 +557,44 @@ def test_validate_interview_review_accepts_common_variants() -> None:
     assert review.overall_evaluation == "整体表达清楚，但技术深度还可以加强。"
     assert review.highlights == ["能结合项目回答", "能说明职责"]
     assert [score.dimension for score in review.ability_scores] == list(ABILITY_DIMENSIONS)
+
+
+def test_validate_interview_review_accepts_jd_match_analysis_variants() -> None:
+    base_review = {
+        "overall_evaluation": "整体完成度不错。",
+        "highlights": ["能结合项目回答"],
+        "main_issues": ["证据不足"],
+        "question_reviews": ["第 1 题需要补充指标。"],
+        "improved_expression_examples": ["按背景、行动、结果表达。"],
+        "sample_answers": ["示范性回答。"],
+        "knowledge_references": ["结构化表达"],
+        "learning_framework": ["整理项目指标"],
+        "next_practice_suggestions": ["练习项目深挖"],
+        "ability_scores": [
+            {"dimension": dimension, "score": 3, "rationale": "基于本次回答。"}
+            for dimension in ABILITY_DIMENSIONS
+        ],
+    }
+    review = validate_interview_review(
+        {
+            **base_review,
+            "jdMatchAnalysis": {
+                "匹配证据": "React 项目经验\n接口协作经验",
+                "暴露的岗位缺口": ["性能优化证据不足"],
+                "项目表达改进": ["补充技术取舍与量化结果"],
+                "下一轮优先补齐的 JD 要求": ["复杂场景排障"],
+            },
+        }
+    )
+
+    assert review.jd_match_analysis is not None
+    assert review.jd_match_analysis.matching_evidence == ["React 项目经验", "接口协作经验"]
+    assert review.jd_match_analysis.role_gaps == ["性能优化证据不足"]
+    assert review.jd_match_analysis.project_expression_improvements == ["补充技术取舍与量化结果"]
+    assert review.jd_match_analysis.next_practice_jd_priorities == ["复杂场景排障"]
+
+    assert validate_interview_review({**base_review, "jdMatchAnalysis": "无效结构"}).jd_match_analysis is None
+    assert validate_interview_review({**base_review, "jdMatchAnalysis": {}}).jd_match_analysis is None
 
 
 def test_validate_interview_review_accepts_provider_score_object_variants() -> None:

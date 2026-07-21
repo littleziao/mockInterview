@@ -44,6 +44,40 @@ REVIEW_FIELD_ALIASES = {
     "ability_scores": ("ability_scores", "abilityScores", "scores", "能力评分"),
 }
 
+JD_MATCH_ANALYSIS_FIELD_ALIASES = {
+    "matching_evidence": (
+        "matching_evidence",
+        "matchingEvidence",
+        "匹配证据",
+    ),
+    "role_gaps": (
+        "role_gaps",
+        "roleGaps",
+        "exposed_role_gaps",
+        "暴露的岗位缺口",
+        "岗位缺口",
+    ),
+    "project_expression_improvements": (
+        "project_expression_improvements",
+        "projectExpressionImprovements",
+        "项目表达如何更贴 JD",
+        "项目表达改进",
+    ),
+    "next_practice_jd_priorities": (
+        "next_practice_jd_priorities",
+        "nextPracticeJdPriorities",
+        "下一轮优先补齐的 JD 要求",
+        "下轮 JD 优先级",
+    ),
+}
+
+JD_MATCH_ANALYSIS_OBJECT_ALIASES = (
+    "jd_match_analysis",
+    "jdMatchAnalysis",
+    "JD 匹配分析",
+    "JD匹配分析",
+)
+
 LIST_FIELDS = {
     "highlights",
     "main_issues",
@@ -62,6 +96,13 @@ class AbilityScore(BaseModel):
     rationale: str = Field(min_length=1)
 
 
+class JDMatchAnalysis(BaseModel):
+    matching_evidence: list[str] = Field(default_factory=list)
+    role_gaps: list[str] = Field(default_factory=list)
+    project_expression_improvements: list[str] = Field(default_factory=list)
+    next_practice_jd_priorities: list[str] = Field(default_factory=list)
+
+
 class InterviewReview(BaseModel):
     overall_evaluation: str = Field(min_length=1)
     highlights: list[str] = Field(min_length=1)
@@ -73,6 +114,7 @@ class InterviewReview(BaseModel):
     learning_framework: list[str] = Field(min_length=1)
     next_practice_suggestions: list[str] = Field(min_length=1)
     ability_scores: list[AbilityScore] = Field(min_length=len(ABILITY_DIMENSIONS), max_length=len(ABILITY_DIMENSIONS))
+    jd_match_analysis: JDMatchAnalysis | None = None
 
 
 class InterviewReviewValidationError(ValueError):
@@ -240,6 +282,21 @@ def _normalize_ability_scores(value: object) -> list[dict[str, object]]:
     return [by_dimension[dimension] for dimension in ABILITY_DIMENSIONS if dimension in by_dimension]
 
 
+def _normalize_jd_match_analysis(sub_data: object) -> dict[str, list[str]] | None:
+    if not isinstance(sub_data, dict):
+        return None
+
+    normalized: dict[str, list[str]] = {}
+    for field_name, aliases in JD_MATCH_ANALYSIS_FIELD_ALIASES.items():
+        value = next((sub_data[alias] for alias in aliases if alias in sub_data), None)
+        normalized[field_name] = _coerce_list(value)
+
+    if not any(normalized.values()):
+        return None
+
+    return normalized
+
+
 def _normalize_review_data(data: object) -> object:
     unwrapped_data = _unwrap_review_payload(data)
     if not isinstance(unwrapped_data, dict):
@@ -254,6 +311,14 @@ def _normalize_review_data(data: object) -> object:
             normalized[field_name] = _normalize_ability_scores(value)
         elif value is not None:
             normalized[field_name] = str(value).strip()
+
+    jd_match_sub_data = next(
+        (unwrapped_data[alias] for alias in JD_MATCH_ANALYSIS_OBJECT_ALIASES if alias in unwrapped_data),
+        None,
+    )
+    jd_match_analysis = _normalize_jd_match_analysis(jd_match_sub_data)
+    if jd_match_analysis is not None:
+        normalized["jd_match_analysis"] = jd_match_analysis
 
     return normalized
 

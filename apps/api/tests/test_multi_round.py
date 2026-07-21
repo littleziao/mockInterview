@@ -501,6 +501,28 @@ def test_review_prompt_contains_each_round_focus() -> None:
         assert template.focus in prompt
 
 
+def test_review_prompt_includes_jd_match_analysis_only_with_jd() -> None:
+    provider = _provider()
+    with_jd = provider._build_interview_review_prompt(
+        analysis=_analysis_with_jd(),
+        target_role="前端工程师",
+        session=_session("peer_technical"),
+    )
+    without_jd = provider._build_interview_review_prompt(
+        analysis=_analysis(),
+        target_role="前端工程师",
+        session=_session("peer_technical"),
+    )
+
+    assert "额外返回 jd_match_analysis" in with_jd
+    assert "matching_evidence" in with_jd
+    assert "project_expression_improvements" in with_jd
+    assert "不替代 ability_scores" in with_jd
+    assert "负责前端工程化" in with_jd
+    assert "不要返回 jd_match_analysis" in without_jd
+    assert "额外返回 jd_match_analysis" not in without_jd
+
+
 def test_action_prompt_single_round_has_no_round_section() -> None:
     provider = _provider()
     prompt = provider._build_interview_action_prompt(

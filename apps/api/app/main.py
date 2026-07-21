@@ -543,6 +543,13 @@ class AbilityScorePayload(BaseModel):
     rationale: str
 
 
+class JDMatchAnalysisPayload(BaseModel):
+    matching_evidence: list[str] = Field(serialization_alias="matchingEvidence")
+    role_gaps: list[str] = Field(serialization_alias="roleGaps")
+    project_expression_improvements: list[str] = Field(serialization_alias="projectExpressionImprovements")
+    next_practice_jd_priorities: list[str] = Field(serialization_alias="nextPracticeJdPriorities")
+
+
 class InterviewReviewPayload(BaseModel):
     overall_evaluation: str = Field(serialization_alias="overallEvaluation")
     highlights: list[str]
@@ -554,6 +561,10 @@ class InterviewReviewPayload(BaseModel):
     learning_framework: list[str] = Field(serialization_alias="learningFramework")
     next_practice_suggestions: list[str] = Field(serialization_alias="nextPracticeSuggestions")
     ability_scores: list[AbilityScorePayload] = Field(serialization_alias="abilityScores")
+    jd_match_analysis: JDMatchAnalysisPayload | None = Field(
+        default=None,
+        serialization_alias="jdMatchAnalysis",
+    )
 
 
 class HistoryRecordPayload(BaseModel):
@@ -628,6 +639,16 @@ def _to_session_payload(session: InterviewSession) -> InterviewSessionPayload:
 
 
 def _to_review_payload(review: InterviewReview) -> InterviewReviewPayload:
+    jd_match_analysis = (
+        JDMatchAnalysisPayload(
+            matching_evidence=review.jd_match_analysis.matching_evidence,
+            role_gaps=review.jd_match_analysis.role_gaps,
+            project_expression_improvements=review.jd_match_analysis.project_expression_improvements,
+            next_practice_jd_priorities=review.jd_match_analysis.next_practice_jd_priorities,
+        )
+        if review.jd_match_analysis is not None
+        else None
+    )
     return InterviewReviewPayload(
         overall_evaluation=review.overall_evaluation,
         highlights=review.highlights,
@@ -646,6 +667,7 @@ def _to_review_payload(review: InterviewReview) -> InterviewReviewPayload:
             )
             for score in review.ability_scores
         ],
+        jd_match_analysis=jd_match_analysis,
     )
 
 
