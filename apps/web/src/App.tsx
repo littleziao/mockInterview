@@ -77,6 +77,15 @@ type AIProviderTestResult = {
   message: string;
 };
 
+type JobDescriptionAnalysis = {
+  coreResponsibilities: string[];
+  requiredRequirements: string[];
+  bonusPoints: string[];
+  likelyProbes: string[];
+  matchingEvidence: string[];
+  roleGaps: string[];
+};
+
 type ResumeAnalysis = {
   backgroundSummary: string;
   keyProjects: string[];
@@ -87,6 +96,8 @@ type ResumeAnalysis = {
   targetRoleNotes: string;
   focusTopics: string[];
   lowPriorityFollowUpTopics: string[];
+  inferredTargetRole?: string | null;
+  jobDescriptionAnalysis?: JobDescriptionAnalysis | null;
 };
 
 type ResumeAnalysisRecord = {
@@ -699,6 +710,8 @@ function NewInterviewFlow({
   const [sourceResumeAnalysisRecordId, setSourceResumeAnalysisRecordId] = useState<number | null>(null);
   const sourceResumeAnalysisRecordIdRef = useRef<number | null>(null);
   const [session, setSession] = useState<InterviewSession | null>(null);
+  const [targetRoleInferred, setTargetRoleInferred] = useState(false);
+  const [jdOriginalExpanded, setJdOriginalExpanded] = useState(false);
   const [answerDraft, setAnswerDraft] = useState("");
   const [interviewError, setInterviewError] = useState("");
   // 用户提交后、服务端回复前的乐观回答；非 null 期间对话区追加该回答与「正在思考」气泡。
@@ -769,6 +782,7 @@ function NewInterviewFlow({
       sourceResumeAnalysisRecordIdRef.current = null;
       onClearResumeAnalysisDraft();
       setSession(null);
+      setTargetRoleInferred(false);
       setAnswerDraft("");
       setWorkflowMessage(message);
     }
@@ -843,7 +857,12 @@ function NewInterviewFlow({
         const detail = (await response.json().catch(() => null)) as { detail?: string } | null;
         throw new Error(detail?.detail ?? "生成简历分析失败");
       }
-      setAnalysis((await response.json()) as ResumeAnalysis);
+      const parsed = (await response.json()) as ResumeAnalysis;
+      setAnalysis(parsed);
+      if (!targetRole.trim() && parsed.inferredTargetRole) {
+        setTargetRole(parsed.inferredTargetRole);
+        setTargetRoleInferred(true);
+      }
       await onResumeAnalysisCreated();
       setSavedInterviewId(null);
       setSourceResumeAnalysisRecordId(null);
@@ -900,7 +919,18 @@ function NewInterviewFlow({
               unclear_points: analysis.unclearPoints,
               target_role_notes: analysis.targetRoleNotes,
               focus_topics: analysis.focusTopics,
-              low_priority_follow_up_topics: analysis.lowPriorityFollowUpTopics
+              low_priority_follow_up_topics: analysis.lowPriorityFollowUpTopics,
+              inferred_target_role: analysis.inferredTargetRole ?? null,
+              job_description_analysis: analysis.jobDescriptionAnalysis
+                ? {
+                    core_responsibilities: analysis.jobDescriptionAnalysis.coreResponsibilities,
+                    required_requirements: analysis.jobDescriptionAnalysis.requiredRequirements,
+                    bonus_points: analysis.jobDescriptionAnalysis.bonusPoints,
+                    likely_probes: analysis.jobDescriptionAnalysis.likelyProbes,
+                    matching_evidence: analysis.jobDescriptionAnalysis.matchingEvidence,
+                    role_gaps: analysis.jobDescriptionAnalysis.roleGaps
+                  }
+                : null
             }
           })
         });
@@ -1089,6 +1119,14 @@ function NewInterviewFlow({
     setSavedInterviewId(null);
     setSession(null);
     setAnalysis((currentAnalysis) => (currentAnalysis ? { ...currentAnalysis, ...patch } : currentAnalysis));
+  }
+
+  // 确认页编辑目标岗位只更新标签，不触发重新解析（与 updateAnalysis 同语义）。
+  function updateTargetRoleOnConfirm(value: string) {
+    setTargetRole(value);
+    setTargetRoleInferred(false);
+    setSavedInterviewId(null);
+    setSession(null);
   }
 
   async function abandonStartedInterview() {
@@ -1351,6 +1389,14 @@ function NewInterviewFlow({
 
           {workflowMessage ? <div className="workflowMessage">{workflowMessage}</div> : null}
 
+          <label className="targetRoleField">
+            <span>
+              目标岗位
+              {targetRoleInferred ? <small className="fieldHint">AI 推断，可修改</small> : null}
+            </span>
+            <input onChange={(event) => updateTargetRoleOnConfirm(event.target.value)} value={targetRole} />
+          </label>
+
           <div className="analysisGrid">
             <label>
               <span>背景摘要</span>
@@ -1425,6 +1471,115 @@ function NewInterviewFlow({
               />
             </label>
          </div>
+
+          {analysis.jobDescriptionAnalysis ? (
+            <div className="analysisGrid jdAnalysisGrid" aria-label="岗位 JD 分析">
+              <label>
+                <span>核心职责</span>
+                <textarea
+                  onChange={(event) =>
+                    updateAnalysis({
+                      jobDescriptionAnalysis: {
+                        ...analysis.jobDescriptionAnalysis!,
+                        coreResponsibilities: linesToList(event.target.value)
+                      }
+                    })
+                  }
+                  rows={3}
+                  value={listToLines(analysis.jobDescriptionAnalysis.coreResponsibilities)}
+                />
+              </label>
+              <label>
+                <span>必备要求</span>
+                <textarea
+                  onChange={(event) =>
+                    updateAnalysis({
+                      jobDescriptionAnalysis: {
+                        ...analysis.jobDescriptionAnalysis!,
+                        requiredRequirements: linesToList(event.target.value)
+                      }
+                    })
+                  }
+                  rows={3}
+                  value={listToLines(analysis.jobDescriptionAnalysis.requiredRequirements)}
+                />
+              </label>
+              <label>
+                <span>加分项</span>
+                <textarea
+                  onChange={(event) =>
+                    updateAnalysis({
+                      jobDescriptionAnalysis: {
+                        ...analysis.jobDescriptionAnalysis!,
+                        bonusPoints: linesToList(event.target.value)
+                      }
+                    })
+                  }
+                  rows={3}
+                  value={listToLines(analysis.jobDescriptionAnalysis.bonusPoints)}
+                />
+              </label>
+              <label>
+                <span>可能考察点</span>
+                <textarea
+                  onChange={(event) =>
+                    updateAnalysis({
+                      jobDescriptionAnalysis: {
+                        ...analysis.jobDescriptionAnalysis!,
+                        likelyProbes: linesToList(event.target.value)
+                      }
+                    })
+                  }
+                  rows={3}
+                  value={listToLines(analysis.jobDescriptionAnalysis.likelyProbes)}
+                />
+              </label>
+              <label>
+                <span>匹配证据</span>
+                <textarea
+                  onChange={(event) =>
+                    updateAnalysis({
+                      jobDescriptionAnalysis: {
+                        ...analysis.jobDescriptionAnalysis!,
+                        matchingEvidence: linesToList(event.target.value)
+                      }
+                    })
+                  }
+                  rows={3}
+                  value={listToLines(analysis.jobDescriptionAnalysis.matchingEvidence)}
+                />
+              </label>
+              <label>
+                <span>岗位缺口</span>
+                <textarea
+                  onChange={(event) =>
+                    updateAnalysis({
+                      jobDescriptionAnalysis: {
+                        ...analysis.jobDescriptionAnalysis!,
+                        roleGaps: linesToList(event.target.value)
+                      }
+                    })
+                  }
+                  rows={3}
+                  value={listToLines(analysis.jobDescriptionAnalysis.roleGaps)}
+                />
+              </label>
+            </div>
+          ) : null}
+
+          {targetJobDescription.trim() ? (
+            <div className="jdOriginalSection">
+              <button
+                aria-expanded={jdOriginalExpanded}
+                className="secondaryButton"
+                onClick={() => setJdOriginalExpanded((expanded) => !expanded)}
+                type="button"
+              >
+                {jdOriginalExpanded ? "收起 JD 原文" : "查看 JD 原文"}
+              </button>
+              {jdOriginalExpanded ? <pre className="resumeMarkdownPre">{targetJobDescription}</pre> : null}
+            </div>
+          ) : null}
        </div>
       </section>
     );
