@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .ai_provider import (
@@ -1124,3 +1126,10 @@ def get_interview(interview_id: int) -> InterviewPayload:
         raise HTTPException(status_code=404, detail="面试记录不存在")
 
     return _to_interview_payload(interview)
+
+
+# 后端托管前端构建产物（apps/web/dist）。放在所有 API 路由之后，
+# html=True 让 SPA 路由刷新回落到 index.html。dist 不存在时跳过（开发模式）。
+_FRONTEND_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
+if _FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")

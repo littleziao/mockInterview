@@ -710,7 +710,7 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
-        "http://127.0.0.1:8000/settings/ai-provider",
+        "/settings/ai-provider",
         expect.objectContaining({ method: "PUT" })
       );
     });
@@ -756,7 +756,7 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
-        "http://127.0.0.1:8000/history?target_role=%E5%89%8D%E7%AB%AF%E5%B7%A5%E7%A8%8B%E5%B8%88"
+        "/history?target_role=%E5%89%8D%E7%AB%AF%E5%B7%A5%E7%A8%8B%E5%B8%88"
       );
     });
     await waitFor(() => {
@@ -787,7 +787,7 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
-        "http://127.0.0.1:8000/history/2",
+        "/history/2",
         expect.objectContaining({ method: "DELETE" })
       );
     });
@@ -815,7 +815,7 @@ describe("App", () => {
     });
     expect(screen.getByText("最近导入：resume.md")).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/resume-analyses/generate",
+      "/resume-analyses/generate",
       expect.anything()
     );
 
@@ -835,7 +835,7 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
-        "http://127.0.0.1:8000/interviews",
+        "/interviews",
         expect.objectContaining({
           method: "POST",
           body: expect.stringContaining("用户编辑后的背景摘要")
@@ -843,19 +843,19 @@ describe("App", () => {
       );
     });
     expect(fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/interviews",
+      "/interviews",
       expect.objectContaining({
         body: expect.stringContaining("low_priority_follow_up_topics")
       })
     );
     expect(fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/interviews",
+      "/interviews",
       expect.objectContaining({
         body: expect.stringContaining('"interviewMode":"multi_round"')
       })
     );
     expect(fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/interviews/7/sessions",
+      "/interviews/7/sessions",
       expect.objectContaining({
         method: "POST",
         body: expect.stringContaining("pressure")
@@ -907,7 +907,7 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
-        "http://127.0.0.1:8000/resume-analyses/generate",
+        "/resume-analyses/generate",
         expect.objectContaining({
           method: "POST",
           body: expect.stringContaining('"targetJobDescription":"职责：负责 React 工作台体验；要求：TypeScript、接口协作。"')
@@ -919,7 +919,7 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
-        "http://127.0.0.1:8000/interviews",
+        "/interviews",
         expect.objectContaining({
           method: "POST",
           body: expect.stringContaining('"targetJobDescription":"职责：负责 React 工作台体验；要求：TypeScript、接口协作。"')
@@ -970,7 +970,7 @@ describe("App", () => {
 
     expect(screen.getByText("目标岗位 JD 不能超过 8000 字符")).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/resume-analyses/generate",
+      "/resume-analyses/generate",
       expect.anything()
     );
   });
@@ -993,7 +993,7 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
-        "http://127.0.0.1:8000/interviews",
+        "/interviews",
         expect.objectContaining({
           method: "POST",
           body: expect.stringContaining('"core_responsibilities":["用户编辑的核心职责"]')
@@ -1111,9 +1111,9 @@ describe("App", () => {
 
     expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
     expect(screen.getByDisplayValue("历史背景摘要")).toBeInTheDocument();
-    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/resume-analysis-records/42");
+    expect(fetch).toHaveBeenCalledWith("/resume-analysis-records/42");
     expect(fetch).not.toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/interviews/7/sessions",
+      "/interviews/7/sessions",
       expect.objectContaining({ method: "POST" })
     );
 
@@ -1125,7 +1125,7 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
-        "http://127.0.0.1:8000/interviews",
+        "/interviews",
         expect.objectContaining({
           method: "POST",
           body: expect.stringContaining('"sourceResumeAnalysisRecordId":42')
@@ -1133,7 +1133,7 @@ describe("App", () => {
       );
     });
     expect(fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/interviews",
+      "/interviews",
       expect.objectContaining({
         body: expect.stringContaining("确认页编辑后的背景摘要")
       })
@@ -1212,7 +1212,7 @@ describe("App", () => {
     // 复用回到确认页（不跳过到面试问题），预填岗位 JD 分析与 JD 原文折叠。
     expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/interviews/7/sessions",
+      "/interviews/7/sessions",
       expect.objectContaining({ method: "POST" })
     );
     const jdGrid = await screen.findByLabelText("岗位 JD 分析");
@@ -1227,7 +1227,7 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
-        "http://127.0.0.1:8000/interviews",
+        "/interviews",
         expect.objectContaining({
           method: "POST",
           body: expect.stringContaining('"sourceResumeAnalysisRecordId":42')
@@ -1235,7 +1235,7 @@ describe("App", () => {
       );
     });
     expect(fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/interviews",
+      "/interviews",
       expect.objectContaining({
         body: expect.stringContaining('"core_responsibilities":["确认版核心职责"]')
       })
@@ -1287,7 +1287,7 @@ describe("App", () => {
     expect(detail).toHaveTextContent("React");
     expect(detail).toHaveTextContent("历史风险");
     expect(detail).toHaveTextContent("历史低优先级");
-    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/resume-analysis-records/42");
+    expect(fetch).toHaveBeenCalledWith("/resume-analysis-records/42");
 
     await user.click(screen.getByRole("button", { name: "收起详情" }));
     expect(screen.queryByLabelText("简历分析记录详情")).not.toBeInTheDocument();
@@ -1373,7 +1373,7 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
-        "http://127.0.0.1:8000/resume-analysis-records/42",
+        "/resume-analysis-records/42",
         expect.objectContaining({ method: "DELETE" })
       );
     });
@@ -1421,7 +1421,7 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
     expect(screen.getByDisplayValue("后端历史摘要")).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/interviews/7/sessions",
+      "/interviews/7/sessions",
       expect.objectContaining({ method: "POST" })
     );
   });
@@ -1518,7 +1518,7 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
-        "http://127.0.0.1:8000/interview-sessions/31/abandon",
+        "/interview-sessions/31/abandon",
         expect.objectContaining({ method: "POST" })
       );
     });
@@ -1549,8 +1549,8 @@ describe("App", () => {
 
     expect(await screen.findByRole("heading", { name: "开始面试" })).toBeInTheDocument();
     expect(screen.getByText("继续上次的回答吧。")).toBeInTheDocument();
-    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/interview-sessions/31");
-    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/interviews/7");
+    expect(fetch).toHaveBeenCalledWith("/interview-sessions/31");
+    expect(fetch).toHaveBeenCalledWith("/interviews/7");
   });
 
   it("存在进行中面试时禁止新建并提示先去首页处理", async () => {
@@ -1579,7 +1579,7 @@ describe("App", () => {
 
     expect(await screen.findByText("已有未完成的面试，请先在首页继续或放弃后再开始新面试")).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/interviews",
+      "/interviews",
       expect.objectContaining({ method: "POST" })
     );
   });
@@ -1617,7 +1617,7 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
-        "http://127.0.0.1:8000/interviews",
+        "/interviews",
         expect.objectContaining({
           method: "POST",
           body: expect.stringContaining('"includeHrRound":true')
@@ -1649,7 +1649,7 @@ describe("App", () => {
     await user.click(nextButton);
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
-        "http://127.0.0.1:8000/interviews/7/sessions",
+        "/interviews/7/sessions",
         expect.objectContaining({ method: "POST" })
       );
     });

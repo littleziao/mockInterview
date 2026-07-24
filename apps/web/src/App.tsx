@@ -268,7 +268,8 @@ const interviewModeOptions: { value: InterviewMode; label: string }[] = [
   { value: "multi_round", label: "多轮面试" }
 ];
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+// 默认同源（后端托管前端时）；开发模式可用 VITE_API_BASE_URL 指向后端。
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
 
 function routeFromHash(hash: string): RouteId {
   switch (hash.replace(/^#/, "")) {
