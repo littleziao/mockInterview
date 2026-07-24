@@ -166,6 +166,49 @@ uv run uvicorn apps.api.app.main:app --host 127.0.0.1 --port 8000
 
 打开 `http://localhost:8000`。
 
+### 离线迁移：只打镜像去别的机器部署
+
+适用于构建机有源码、目标机没有源码（或无网络拉镜像）的场景。分**构建机**和**目标机**两步。
+
+#### 1. 构建机：打镜像并导出
+
+```powershell
+# 在源码根目录，构建并打 tag
+docker compose build
+
+# 导出为 tar（约几十~一百多 MB）
+docker save mock-interview:latest -o mock-interview.tar
+```
+
+把 `mock-interview.tar` 和 `compose.yml` 两个文件拷到目标机（U 盘、scp、内网传输均可）。**不需要拷源码**。
+
+#### 2. 目标机：加载镜像并运行
+
+前提：目标机已装 Docker。无需源码、无需联网。
+
+```powershell
+# 加载镜像
+docker load -i mock-interview.tar
+
+# 准备数据目录（compose 里挂载 ./data）
+mkdir data
+
+# 用同一份 compose.yml 起（它会用本地已加载的 mock-interview:latest，不会尝试 build）
+docker compose up -d
+```
+
+打开 `http://localhost:8000`。
+
+> 目标机首次起时 `data/` 为空，后端会自动初始化数据库。后续重建容器数据保留在 `./data`。
+
+#### 升级镜像
+
+构建机重新 `docker compose build` → `docker save` → 拷到目标机 → `docker load -i ...` → 目标机 `docker compose up -d`（compose 检测到镜像更新会重建容器，`data/` 不动）。
+
+#### 迁移已有数据
+
+若想把构建机的数据一起搬过去，额外拷 `data/` 目录到目标机的 `./data` 即可（数据库 + AI 配置都在里面）。
+
 ## 目录结构
 
 ```text

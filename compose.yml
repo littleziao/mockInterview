@@ -1,6 +1,9 @@
 services:
   app:
-    build: .
+    image: mock-interview:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     volumes:
