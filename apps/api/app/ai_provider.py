@@ -378,7 +378,7 @@ class OpenAICompatibleProvider:
                     "messages": [{"role": "user", "content": "ping"}],
                     "max_tokens": 1,
                 },
-                timeout=10,
+                timeout=30,
             )
             _raise_provider_http_error(response, self.settings, endpoint)
         except AIProviderRequestError as error:
@@ -450,7 +450,7 @@ class OpenAICompatibleProvider:
                     ],
                     "response_format": {"type": "json_object"},
                 },
-                timeout=30,
+                timeout=120,
             )
             _raise_provider_http_error(response, self.settings, endpoint)
             payload = response.json()
@@ -525,7 +525,7 @@ class OpenAICompatibleProvider:
                     ],
                     "response_format": {"type": "json_object"},
                 },
-                timeout=30,
+                timeout=120,
             )
             _raise_provider_http_error(response, self.settings, endpoint)
             payload = response.json()
@@ -601,7 +601,7 @@ class OpenAICompatibleProvider:
                     ],
                     "response_format": {"type": "json_object"},
                 },
-                timeout=45,
+                timeout=120,
             )
             _raise_provider_http_error(response, self.settings, endpoint)
             payload = response.json()
