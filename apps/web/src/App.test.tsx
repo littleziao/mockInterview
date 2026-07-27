@@ -197,6 +197,62 @@ function buildAnswerResponse(answer: string) {
   };
 }
 
+function sseFramesForSession(payload: unknown): Array<{ event: string; data: unknown }> {
+  const transcript =
+    (payload as { transcript?: Array<{ role: string; content: string }> }).transcript ?? [];
+  const lastInterviewer = [...transcript].reverse().find((message) => message.role === "interviewer");
+  const frames: Array<{ event: string; data: unknown }> = [];
+  if (lastInterviewer) {
+    const text = lastInterviewer.content;
+    const mid = Math.ceil(text.length / 2);
+    if (text.slice(0, mid)) {
+      frames.push({ event: "delta", data: { text: text.slice(0, mid) } });
+    }
+    if (text.slice(mid)) {
+      frames.push({ event: "delta", data: { text: text.slice(mid) } });
+    }
+  }
+  frames.push({ event: "done", data: payload });
+  return frames;
+}
+
+function encodeSSEFrame(frame: { event: string; data: unknown }): Uint8Array {
+  return new TextEncoder().encode(`event: ${frame.event}\ndata: ${JSON.stringify(frame.data)}\n\n`);
+}
+
+function sessionToSSEResponse(payload: unknown): Response {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const frame of sseFramesForSession(payload)) {
+        controller.enqueue(encodeSSEFrame(frame));
+      }
+      controller.close();
+    },
+  });
+  return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+}
+
+// 受控 SSE 流：release 前挂起（用于测试「fetch 已发出但响应未到达」的乐观中间态）。
+function makeControllableSSEResponse(payload: unknown): { response: Response; release: () => void } {
+  const frames = sseFramesForSession(payload);
+  let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controllerRef = controller;
+    },
+  });
+  return {
+    response: new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+    release: () => {
+      if (!controllerRef) return;
+      for (const frame of frames) {
+        controllerRef.enqueue(encodeSSEFrame(frame));
+      }
+      controllerRef.close();
+    },
+  };
+}
+
 describe("App", () => {
   beforeEach(() => {
     interviewAnswerCount = 0;
@@ -462,7 +518,7 @@ describe("App", () => {
         }
 
         if (url.match(/\/interviews\/\d+\/sessions$/) && init?.method === "POST") {
-          return Response.json({
+          return sessionToSSEResponse({
             id: 31,
             interviewId: 7,
             style: "study",
@@ -494,7 +550,7 @@ describe("App", () => {
             return Promise.resolve(answersHandlerOverride(init));
           }
           interviewAnswerCount += 1;
-          return Response.json({
+          return sessionToSSEResponse({
             id: 31,
             interviewId: 7,
             style: "study",
@@ -1684,11 +1740,10 @@ describe("App", () => {
 
     // 让服务端响应挂起：用受控的 Promise，测试期间永不 resolve，
     // 以便断言「fetch 已发出但响应未到达」的乐观渲染中间态。
-    let releaseServer!: () => void;
-    answersHandlerOverride = () =>
-      new Promise<Response>((resolve) => {
-        releaseServer = () => resolve(Response.json(buildAnswerResponse("我负责简历分析与 Provider 接入")));
-      });
+    const { response: pendingResponse, release: releaseServer } = makeControllableSSEResponse(
+      buildAnswerResponse("我负责简历分析与 Provider 接入")
+    );
+    answersHandlerOverride = () => pendingResponse;
 
     // 查询限定在对话记录区域内，避免误匹配回答输入框里的同名文本。
     const transcript = screen.getByLabelText("面试对话记录");
@@ -1716,11 +1771,10 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "确认配置并开始面试" }));
     await screen.findByRole("heading", { name: "开始面试" });
 
-    let releaseServer!: () => void;
-    answersHandlerOverride = () =>
-      new Promise<Response>((resolve) => {
-        releaseServer = () => resolve(Response.json(buildAnswerResponse("我负责简历分析与 Provider 接入")));
-      });
+    const { response: pendingResponse, release: releaseServer } = makeControllableSSEResponse(
+      buildAnswerResponse("我负责简历分析与 Provider 接入")
+    );
+    answersHandlerOverride = () => pendingResponse;
 
     const transcript = screen.getByLabelText("面试对话记录");
 
@@ -1741,6 +1795,54 @@ describe("App", () => {
     });
     expect(within(transcript).getByText("你提到 SQLite Repository，能说说它解决了什么问题吗？")).toBeInTheDocument();
     expect(within(transcript).getAllByText("我负责简历分析与 Provider 接入")).toHaveLength(1);
+  });
+
+  it("流式 delta 到达后用面试官文字替换思考动画，done 后整体替换", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "解析简历" }));
+    await screen.findByRole("heading", { name: "简历解析与配置" });
+    await user.click(screen.getByRole("button", { name: "确认配置并开始面试" }));
+    await screen.findByRole("heading", { name: "开始面试" });
+
+    const transcript = screen.getByLabelText("面试对话记录");
+    const encoder = new TextEncoder();
+    const holder: { controller: ReadableStreamDefaultController<Uint8Array> | null } = {
+      controller: null
+    };
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        holder.controller = c;
+      },
+    });
+    const payload = buildAnswerResponse("我负责简历分析与 Provider 接入");
+    answersHandlerOverride = () =>
+      new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+
+    await user.type(screen.getByLabelText("文字回答"), "我负责简历分析与 Provider 接入");
+    await user.click(screen.getByRole("button", { name: "提交回答" }));
+
+    // 提交后立即显示思考动画。
+    await waitFor(() => {
+      expect(within(transcript).getByText(/正在思考/)).toBeInTheDocument();
+    });
+
+    // 第一段 delta 到达：思考动画被流式文字替换。
+    holder.controller?.enqueue(encoder.encode('event: delta\ndata: {"text":"你提到"}\n\n'));
+    await waitFor(() => {
+      expect(within(transcript).getByText("你提到")).toBeInTheDocument();
+    });
+    expect(within(transcript).queryByText(/正在思考/)).not.toBeInTheDocument();
+
+    // done 帧到达：整体替换为权威 transcript。
+    holder.controller?.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify(payload)}\n\n`));
+    holder.controller?.close();
+    await waitFor(() => {
+      expect(
+        within(transcript).getByText("你提到 SQLite Repository，能说说它解决了什么问题吗？")
+      ).toBeInTheDocument();
+    });
   });
 
   it("提交失败时回滚乐观消息、恢复回答草稿并显示错误", async () => {

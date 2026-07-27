@@ -1,8 +1,9 @@
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from apps.api.app.ai_provider import OpenAICompatibleProvider
+from apps.api.app.ai_provider import InterviewerActionChunk, OpenAICompatibleProvider
 from apps.api.app.ai_settings import AIProviderSettings
 from apps.api.app.database import connect
 from apps.api.app.interview_session import (
@@ -11,6 +12,7 @@ from apps.api.app.interview_session import (
     FALLBACK_FINAL_CLARIFY,
     FALLBACK_NEXT_MAIN_QUESTION,
     InterviewSession,
+    InterviewerAction,
     TranscriptMessage,
     apply_interviewer_action,
     append_candidate_answer,
@@ -83,19 +85,50 @@ def _create_confirmed_interview(client: TestClient, *, with_jd: bool = False) ->
     return int(response.json()["id"])
 
 
+def _consume_sse(response) -> tuple[dict | None, list[str], dict | None]:
+    """聚合 SSE 流，返回 (done 负载, delta 文本列表, error 负载)。"""
+    done: dict | None = None
+    error: dict | None = None
+    deltas: list[str] = []
+    event = ""
+    for line in response.iter_lines():
+        if not line or line.startswith(":"):
+            continue
+        if line.startswith("event: "):
+            event = line[len("event: ") :]
+        elif line.startswith("data: "):
+            data = json.loads(line[len("data: ") :])
+            if event == "delta":
+                deltas.append(data.get("text", ""))
+            elif event == "done":
+                done = data
+            elif event == "error":
+                error = data
+    return done, deltas, error
+
+
 def _start_session(client: TestClient, interview_id: int, style: str = "study") -> dict:
-    response = client.post(f"/interviews/{interview_id}/sessions", json={"style": style})
-    assert response.status_code == 200, response.text
-    return response.json()
+    with client.stream(
+        "POST", f"/interviews/{interview_id}/sessions", json={"style": style}
+    ) as response:
+        assert response.status_code == 200, response.read()
+        done, _deltas, error = _consume_sse(response)
+    assert error is None, f"unexpected SSE error: {error}"
+    assert done is not None, "SSE 流未发出 done 事件"
+    return done
 
 
 def _answer(client: TestClient, session_id: int, answer: str) -> dict:
-    response = client.post(
+    with client.stream(
+        "POST",
         f"/interview-sessions/{session_id}/answers",
         json={"answer": answer},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()
+    ) as response:
+        assert response.status_code == 200, response.read()
+        done, _deltas, error = _consume_sse(response)
+    assert error is None, f"unexpected SSE error: {error}"
+    assert done is not None, "SSE 流未发出 done 事件"
+    return done
 
 
 def _latest_interviewer(session: dict) -> dict:
@@ -169,10 +202,12 @@ def test_default_interview_style_is_study(monkeypatch, tmp_path: Path) -> None:
         _configure_provider(client)
         interview_id = _create_confirmed_interview(client)
         # 不传 body 时应使用默认学习梳理面。
-        response = client.post(f"/interviews/{interview_id}/sessions")
-        session = response.json()
+        with client.stream("POST", f"/interviews/{interview_id}/sessions") as response:
+            assert response.status_code == 200, response.read()
+            session, _deltas, error = _consume_sse(response)
 
-    assert response.status_code == 200, response.text
+    assert error is None, f"unexpected SSE error: {error}"
+    assert session is not None
     assert session["style"] == "study"
 
 
@@ -422,13 +457,8 @@ def test_last_main_question_answer_can_still_produce_follow_up(monkeypatch, tmp_
             )
         )
 
-        response = client.post(
-            f"/interview-sessions/{session.id}/answers",
-            json={"answer": "这是最后一题的回答。"},
-        )
-        advanced = response.json()
+        advanced = _answer(client, session.id, "这是最后一题的回答。")
 
-    assert response.status_code == 200, response.text
     assert advanced["status"] == "in_progress"
     assert advanced["review"] is None
     assert advanced["mainQuestionCount"] == DEFAULT_MAIN_QUESTIONS
@@ -465,13 +495,8 @@ def test_interview_hard_ends_when_final_question_interactions_are_exhausted(monk
             )
         )
 
-        response = client.post(
-            f"/interview-sessions/{session.id}/answers",
-            json={"answer": "这是最后一次互动的回答。"},
-        )
-        ended = response.json()
+        ended = _answer(client, session.id, "这是最后一次互动的回答。")
 
-    assert response.status_code == 200, response.text
     assert ended["status"] == "awaiting_review"
     assert ended["review"] is None
     assert ended["transcript"][-1]["role"] == "interviewer"
@@ -508,10 +533,14 @@ def test_invalid_ai_action_structure_returns_502(monkeypatch, tmp_path: Path) ->
     with TestClient(app) as client:
         _configure_provider(client, "fake://invalid-action")
         interview_id = _create_confirmed_interview(client)
-        response = client.post(f"/interviews/{interview_id}/sessions", json={"style": "study"})
+        with client.stream(
+            "POST", f"/interviews/{interview_id}/sessions", json={"style": "study"}
+        ) as response:
+            assert response.status_code == 200, response.read()
+            _done, _deltas, error = _consume_sse(response)
 
-    assert response.status_code == 502
-    assert response.json() == {"detail": "AI 返回的面试官动作结构无效"}
+    assert error is not None
+    assert error == {"detail": "AI 返回的面试官动作结构无效", "status": 502}
     assert _interview_session_count() == 0
 
 
@@ -522,11 +551,15 @@ def test_provider_http_failure_returns_502_without_creating_session(monkeypatch,
     with TestClient(app) as client:
         _configure_provider(client, "http://127.0.0.1:9")
         interview_id = _create_confirmed_interview(client)
-        response = client.post(f"/interviews/{interview_id}/sessions", json={"style": "study"})
+        with client.stream(
+            "POST", f"/interviews/{interview_id}/sessions", json={"style": "study"}
+        ) as response:
+            assert response.status_code == 200, response.read()
+            _done, _deltas, error = _consume_sse(response)
 
-    assert response.status_code == 502
-    assert response.json()["detail"].startswith("AI Provider 网络连接失败")
-    assert "127.0.0.1:9/chat/completions" in response.json()["detail"]
+    assert error is not None
+    assert error["detail"].startswith("AI Provider 网络连接失败")
+    assert "127.0.0.1:9/chat/completions" in error["detail"]
     assert _interview_session_count() == 0
 
 
@@ -937,3 +970,127 @@ def test_resuming_in_progress_interview_preserves_full_context(
     assert listing[0]["interviewMode"] == "single_round"
     assert listing[0]["style"] == "pressure"
     assert read_completed_interview_by_session(session["id"]) is None
+
+
+def test_answer_streams_deltas_matching_final_transcript(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client, "fake://success")
+        interview_id = _create_confirmed_interview(client)
+        session = _start_session(client, interview_id)
+        with client.stream(
+            "POST",
+            f"/interview-sessions/{session['id']}/answers",
+            json={"answer": "我负责简历分析和 AI Provider 接入。"},
+        ) as response:
+            assert response.status_code == 200, response.read()
+            done, deltas, error = _consume_sse(response)
+
+    assert error is None
+    assert done is not None
+    streamed = "".join(deltas)
+    assert streamed == done["transcript"][-1]["content"]
+    assert done["transcript"][-1]["role"] == "interviewer"
+
+
+def test_answer_suppresses_delta_when_action_would_downgrade(monkeypatch, tmp_path: Path) -> None:
+    """主问题已满时，AI 若返回 main_question 会被 resolve 降级为 clarify。
+
+    流期间应抑制原始 delta，最终以 reset 帧写出 fallback 文案，避免逐字显示后又被替换。
+    """
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    def fake_stream(*args, **kwargs):
+        action = InterviewerAction(kind="main_question", message="原始主问题文案")
+        yield InterviewerActionChunk(kind="meta", action_kind=action.kind)
+        yield InterviewerActionChunk(kind="delta", text=action.message)
+        yield InterviewerActionChunk(kind="final", action=action)
+
+    monkeypatch.setattr(
+        "apps.api.app.main.stream_next_interviewer_action_with_provider",
+        fake_stream,
+    )
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        interview_id = _create_confirmed_interview(client)
+        session = save_session(
+            InterviewSession(
+                id=0,
+                interview_id=interview_id,
+                style="study",
+                status="in_progress",
+                transcript=[
+                    TranscriptMessage(
+                        role="interviewer",
+                        content="第一个主问题。",
+                        kind="main_question",
+                        main_question_index=DEFAULT_MAIN_QUESTIONS - 1,
+                    )
+                ],
+                main_question_count=DEFAULT_MAIN_QUESTIONS,
+                current_main_question_follow_ups=0,
+            )
+        )
+        with client.stream(
+            "POST",
+            f"/interview-sessions/{session.id}/answers",
+            json={"answer": "继续回答。"},
+        ) as response:
+            assert response.status_code == 200, response.read()
+            done, deltas, error = _consume_sse(response)
+
+    assert error is None
+    assert done is not None
+    # 原始 delta 被抑制，只剩 reset 帧的 fallback 文案
+    assert deltas == [FALLBACK_FINAL_CLARIFY]
+    assert done["transcript"][-1]["kind"] == "clarify"
+    assert done["transcript"][-1]["content"] == FALLBACK_FINAL_CLARIFY
+
+
+def test_answer_emits_error_frame_on_provider_midstream_failure(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client, "fake://stream-error")
+        interview_id = _create_confirmed_interview(client)
+        session = save_session(
+            InterviewSession(
+                id=0,
+                interview_id=interview_id,
+                style="study",
+                status="in_progress",
+                transcript=[
+                    TranscriptMessage(
+                        role="interviewer",
+                        content="开场问题。",
+                        kind="main_question",
+                        main_question_index=0,
+                    ),
+                    TranscriptMessage(
+                        role="candidate",
+                        content="回答。",
+                        kind="",
+                        main_question_index=0,
+                    ),
+                ],
+                main_question_count=1,
+                current_main_question_follow_ups=0,
+            )
+        )
+        with client.stream(
+            "POST",
+            f"/interview-sessions/{session.id}/answers",
+            json={"answer": "继续回答。"},
+        ) as response:
+            assert response.status_code == 200, response.read()
+            done, _deltas, error = _consume_sse(response)
+
+    assert done is None
+    assert error is not None
+    assert error["status"] == 502
+    assert "模拟流式调用中途失败" in error["detail"]

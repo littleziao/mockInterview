@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+
+import { consumeSSEResponse } from "./sse";
 import {
   Activity,
   AlertCircle,
@@ -725,10 +727,20 @@ function NewInterviewFlow({
   const [interviewError, setInterviewError] = useState("");
   // 用户提交后、服务端回复前的乐观回答；非 null 期间对话区追加该回答与「正在思考」气泡。
   const [pendingAnswer, setPendingAnswer] = useState<string | null>(null);
+  // 面试官回复的流式文本：SSE delta 逐字累积，done 后清空。
+  const [streamingMessage, setStreamingMessage] = useState("");
+  const answerAbortRef = useRef<AbortController | null>(null);
 
   const [isSubmittingAnswer, setIsSubmittingAnswer] = useState(false);
   const [isEndingSession, setIsEndingSession] = useState(false);
   const [isGeneratingReview, setIsGeneratingReview] = useState(false);
+
+  // 组件卸载时中止进行中的流式回答，避免对已卸载组件 setState。
+  useEffect(() => {
+    return () => {
+      answerAbortRef.current?.abort();
+    };
+  }, []);
 
   // 从后端恢复未完成面试时，把进行中会话与简历分析灌入流程状态。
   useEffect(() => {
@@ -953,14 +965,30 @@ function NewInterviewFlow({
       }
       const sessionResponse = await fetch(`${apiBaseUrl}/interviews/${interviewId}/sessions`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
         body: JSON.stringify({ style: interviewStyle })
       });
       if (!sessionResponse.ok) {
         const detail = (await sessionResponse.json().catch(() => null)) as { detail?: string } | null;
         throw new Error(detail?.detail ?? "启动面试失败");
       }
-      setSession((await sessionResponse.json()) as InterviewSession);
+      let startedSession: InterviewSession | null = null;
+      let startError = "";
+      await consumeSSEResponse(sessionResponse, {
+        onDelta: () => undefined,
+        onDone: (payload) => {
+          startedSession = payload as InterviewSession;
+        },
+        onError: (detail) => {
+          startError = detail;
+        }
+      });
+      if (startError) {
+        throw new Error(startError);
+      }
+      if (startedSession) {
+        setSession(startedSession);
+      }
       await onResumeAnalysisCreated();
       setWorkflowMessage(`配置已确认，面试记录 #${interviewId} 已开始`);
       onNavigateStep("interview");
@@ -982,30 +1010,60 @@ function NewInterviewFlow({
       return;
     }
 
+    // 防双击：中止上一个还在飞的提交。
+    answerAbortRef.current?.abort();
+
     // 乐观渲染：用户回答立即进入对话区并显示「面试官正在思考」气泡，
-    // 随后等待服务端返回包含这条回答与下一题的权威 transcript 做整体替换。
+    // 流式 SSE 到达后逐字渲染面试官回复，done 帧再做权威 transcript 整体替换。
     setPendingAnswer(answer);
     setAnswerDraft("");
+    setStreamingMessage("");
     setIsSubmittingAnswer(true);
     setInterviewError("");
+
+    const controller = new AbortController();
+    answerAbortRef.current = controller;
+    let streamError = "";
     try {
       const response = await fetch(`${apiBaseUrl}/interview-sessions/${session.id}/answers`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ answer })
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify({ answer }),
+        signal: controller.signal
       });
       if (!response.ok) {
         const detail = (await response.json().catch(() => null)) as { detail?: string } | null;
         throw new Error(detail?.detail ?? "提交回答失败");
       }
-      applySessionUpdate((await response.json()) as InterviewSession);
+      await consumeSSEResponse(
+        response,
+        {
+          onDelta: (text, reset) => setStreamingMessage((prev) => (reset ? text : prev + text)),
+          onDone: (payload) => {
+            applySessionUpdate(payload as InterviewSession);
+            setStreamingMessage("");
+          },
+          onError: (detail) => {
+            streamError = detail;
+          }
+        },
+        controller.signal
+      );
+      if (streamError) {
+        throw new Error(streamError);
+      }
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
       // 提交失败：回滚乐观消息，把回答内容还给输入框，方便用户改后重发。
       setAnswerDraft(answer);
       setInterviewError(error instanceof Error ? error.message : "提交回答失败");
+      setStreamingMessage("");
     } finally {
       setPendingAnswer(null);
       setIsSubmittingAnswer(false);
+      answerAbortRef.current = null;
     }
   }
 
@@ -1104,14 +1162,33 @@ function NewInterviewFlow({
     try {
       const response = await fetch(`${apiBaseUrl}/interviews/${savedInterviewId}/sessions`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
         body: JSON.stringify({ style: interviewStyle })
       });
       if (!response.ok) {
         const detail = (await response.json().catch(() => null)) as { detail?: string } | null;
         throw new Error(detail?.detail ?? "进入下一轮失败");
       }
-      const nextSession = (await response.json()) as InterviewSession;
+      const nextResult: { session: InterviewSession | null; error: string } = {
+        session: null,
+        error: ""
+      };
+      await consumeSSEResponse(response, {
+        onDelta: () => undefined,
+        onDone: (payload) => {
+          nextResult.session = payload as InterviewSession;
+        },
+        onError: (detail) => {
+          nextResult.error = detail;
+        }
+      });
+      if (nextResult.error) {
+        throw new Error(nextResult.error);
+      }
+      if (!nextResult.session) {
+        throw new Error("进入下一轮失败");
+      }
+      const nextSession = nextResult.session;
       setSession(nextSession);
       setRoundsProgress([]);
       setAnswerDraft("");
@@ -1666,6 +1743,7 @@ function NewInterviewFlow({
           onSubmit={submitAnswer}
           pendingAnswer={pendingAnswer}
           session={session}
+          streamingMessage={streamingMessage}
         />
     </section>
   ) : null;
@@ -2417,7 +2495,8 @@ function InterviewConversation({
   onGenerateReview,
   onSubmit,
   pendingAnswer,
-  session
+  session,
+  streamingMessage
 }: {
   answerDraft: string;
   interviewError: string;
@@ -2430,6 +2509,7 @@ function InterviewConversation({
   onSubmit: () => void;
   pendingAnswer: string | null;
   session: InterviewSession;
+  streamingMessage: string;
 }) {
   const styleLabel = session.style === "pressure" ? "压力面" : "学习梳理面";
   const awaitingReview = session.status === "awaiting_review";
@@ -2493,13 +2573,23 @@ function InterviewConversation({
               <div className="transcriptMeta">
                 <span className="roleTag">面试官</span>
               </div>
-              <div className="transcriptBubble thinkingBubble">
-                <span className="thinkingLabel">正在思考</span>
-                <span className="thinkingDots" aria-hidden="true">
-                  <span />
-                  <span />
-                  <span />
-                </span>
+              <div
+                className={
+                  streamingMessage ? "transcriptBubble current" : "transcriptBubble thinkingBubble"
+                }
+              >
+                {streamingMessage ? (
+                  streamingMessage
+                ) : (
+                  <>
+                    <span className="thinkingLabel">正在思考</span>
+                    <span className="thinkingDots" aria-hidden="true">
+                      <span />
+                      <span />
+                      <span />
+                    </span>
+                  </>
+                )}
               </div>
             </li>
           </>

@@ -5,7 +5,7 @@ import json
 import logging
 import re
 import time
-from typing import Protocol
+from typing import Iterator, Literal, Protocol
 
 import httpx
 
@@ -199,6 +199,137 @@ def _format_provider_transport_error(error: httpx.HTTPError, settings: AIProvide
     return f"AI Provider 网络连接失败（{failure_kind}，{_provider_context(settings, endpoint)}）：{raw_message}"
 
 
+@dataclass(frozen=True)
+class InterviewerActionChunk:
+    """流式面试官动作的分片。
+
+    - meta：观察到 kind 字段时发出，供端点判断是否会被 resolve 降级。
+    - delta：message 文本的新增片段（已解码转义）。
+    - final：流结束，携带完整校验后的 InterviewerAction。
+    """
+
+    kind: Literal["meta", "delta", "final"]
+    action_kind: str | None = None
+    text: str | None = None
+    action: InterviewerAction | None = None
+
+
+def _read_json_string(buffer: str, start: int, *, allow_unterminated: bool) -> tuple[str | None, int, bool]:
+    """从 buffer[start]（指向起始引号）读取一个 JSON 字符串，解码转义。
+
+    返回 (解码文本, 结束位置, 是否闭合)。未闭合且 allow_unterminated 时，
+    返回到当前位置已读出的文本与 buffer 长度；否则返回 (None, start, False)。
+    """
+    chars: list[str] = []
+    index = start + 1
+    length = len(buffer)
+    while index < length:
+        char = buffer[index]
+        if char == "\\":
+            if index + 1 >= length:
+                break
+            escaped = buffer[index + 1]
+            simple = {
+                "n": "\n",
+                "t": "\t",
+                "r": "\r",
+                '"': '"',
+                "\\": "\\",
+                "/": "/",
+                "b": "\b",
+                "f": "\f",
+            }.get(escaped)
+            if simple is not None:
+                chars.append(simple)
+                index += 2
+                continue
+            if escaped == "u":
+                hex_part = buffer[index + 2 : index + 6]
+                if len(hex_part) < 4:
+                    break  # \uXXXX 跨块不完整
+                try:
+                    chars.append(chr(int(hex_part, 16)))
+                except ValueError:
+                    chars.append(escaped)
+                index += 6
+                continue
+            chars.append(escaped)
+            index += 2
+            continue
+        if char == '"':
+            return "".join(chars), index, True
+        chars.append(char)
+        index += 1
+
+    if allow_unterminated:
+        return "".join(chars), length, False
+    return None, start, False
+
+
+def _extract_action_fields(buffer: str) -> tuple[str | None, str]:
+    """从可能不完整的 JSON 文本中扫描 kind/message 字段的当前值。
+
+    kind 仅在字符串闭合时返回；message 即使未闭合也返回到当前位置的已解码文本。
+    字段顺序无关，message 字符串内部的 "kind"/引号/冒号不会误判。
+    """
+    kind_value: str | None = None
+    message_value = ""
+    index = 0
+    length = len(buffer)
+    while index < length:
+        if buffer[index] != '"':
+            index += 1
+            continue
+        key_text, key_end, key_closed = _read_json_string(buffer, index, allow_unterminated=False)
+        if key_text is None:
+            break  # key 字符串未闭合，无法继续
+        index = key_end + 1
+        while index < length and buffer[index] in " \t\r\n":
+            index += 1
+        if index >= length or buffer[index] != ":":
+            continue
+        index += 1
+        while index < length and buffer[index] in " \t\r\n":
+            index += 1
+        if index >= length:
+            break  # 值还未到达
+        if buffer[index] != '"':
+            continue  # 值不是字符串
+        value_text, value_end, value_closed = _read_json_string(buffer, index, allow_unterminated=True)
+        if key_text == "kind":
+            if value_closed:
+                kind_value = value_text
+        elif key_text == "message":
+            message_value = value_text or ""
+        if not value_closed:
+            break  # 值未闭合，后续无法可靠解析
+        index = value_end + 1
+    return kind_value, message_value
+
+
+class _StreamingMessageExtractor:
+    """增量累积 AI 流式 content，实时提取 kind/message 字段。"""
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._emitted_len = 0
+        self.kind_value: str | None = None
+        self.message_value = ""
+
+    def feed(self, text: str) -> str:
+        """喂入新片段，返回 message 自上次以来的新增文本（已解码）。"""
+        self._buffer += text
+        kind, message = _extract_action_fields(self._buffer)
+        self.kind_value = kind
+        self.message_value = message
+        delta = message[self._emitted_len :]
+        self._emitted_len = len(message)
+        return delta
+
+    def full_text(self) -> str:
+        return self._buffer
+
+
 class AIProvider(Protocol):
     def test_connection(self) -> ProviderTestResult:
         raise NotImplementedError
@@ -220,6 +351,16 @@ class AIProvider(Protocol):
         target_role: str,
         starting: bool,
     ) -> InterviewerAction:
+        raise NotImplementedError
+
+    def stream_next_interviewer_action(
+        self,
+        *,
+        session: InterviewSession,
+        analysis: ResumeAnalysis,
+        target_role: str,
+        starting: bool,
+    ) -> Iterator[InterviewerActionChunk]:
         raise NotImplementedError
 
     def generate_interview_review(
@@ -314,6 +455,39 @@ class FakeAIProvider:
         return validate_interviewer_action(
             {"kind": "main_question", "message": "我们换个方向，聊聊一个系统设计相关的问题。"}
         )
+
+    def stream_next_interviewer_action(
+        self,
+        *,
+        session: InterviewSession,
+        analysis: ResumeAnalysis,
+        target_role: str,
+        starting: bool,
+    ) -> Iterator[InterviewerActionChunk]:
+        if self.settings.base_url == "fake://stream-error":
+            yield InterviewerActionChunk(kind="delta", text="先发一段，")
+            raise AIProviderRequestError("模拟流式调用中途失败")
+
+        action = self.generate_next_interviewer_action(
+            session=session,
+            analysis=analysis,
+            target_role=target_role,
+            starting=starting,
+        )
+        yield InterviewerActionChunk(kind="meta", action_kind=action.kind)
+
+        slow = self.settings.base_url == "fake://stream-slow"
+        message = action.message
+        step = max(1, len(message) // 3)
+        position = 0
+        while position < len(message):
+            segment = message[position : position + step]
+            if slow:
+                time.sleep(0.05)
+            yield InterviewerActionChunk(kind="delta", text=segment)
+            position += step
+
+        yield InterviewerActionChunk(kind="final", action=action)
 
     def generate_interview_review(
         self,
@@ -504,25 +678,12 @@ class OpenAICompatibleProvider:
                 headers={"Authorization": f"Bearer {self.settings.api_key}"},
                 json={
                     "model": self.settings.model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "你是模拟面试中的真人面试官，目标是围绕候选人的简历进行连续对话式面试。"
-                                "一次只提出一个问题。根据候选人回答决定追问、轻量澄清、缩小范围或换题。"
-                                "不要在面试中讲解知识点、给出参考答案或扮演教练。只返回 JSON。"
-                            ),
-                        },
-                        {
-                            "role": "user",
-                            "content": self._build_interview_action_prompt(
-                                analysis=analysis,
-                                target_role=target_role,
-                                session=session,
-                                starting=starting,
-                            ),
-                        },
-                    ],
+                    "messages": self._interview_action_request_messages(
+                        analysis=analysis,
+                        target_role=target_role,
+                        session=session,
+                        starting=starting,
+                    ),
                     "response_format": {"type": "json_object"},
                 },
                 timeout=120,
@@ -559,6 +720,100 @@ class OpenAICompatibleProvider:
             (time.perf_counter() - started_at) * 1000,
         )
         return result
+
+    def stream_next_interviewer_action(
+        self,
+        *,
+        session: InterviewSession,
+        analysis: ResumeAnalysis,
+        target_role: str,
+        starting: bool,
+    ) -> Iterator[InterviewerActionChunk]:
+        endpoint = self.settings.base_url.rstrip("/") + "/chat/completions"
+        started_at = time.perf_counter()
+        logger.debug(
+            "AI 流式请求 stream_next_interviewer_action model=%s endpoint=%s starting=%s",
+            self.settings.model,
+            endpoint,
+            starting,
+        )
+        extractor = _StreamingMessageExtractor()
+        kind_emitted = False
+        try:
+            with httpx.stream(
+                "POST",
+                endpoint,
+                headers={"Authorization": f"Bearer {self.settings.api_key}"},
+                json={
+                    "model": self.settings.model,
+                    "messages": self._interview_action_request_messages(
+                        analysis=analysis,
+                        target_role=target_role,
+                        session=session,
+                        starting=starting,
+                    ),
+                    "response_format": {"type": "json_object"},
+                    "stream": True,
+                },
+                timeout=httpx.Timeout(120.0, connect=10.0),
+            ) as response:
+                _raise_provider_http_error(response, self.settings, endpoint)
+                for line in response.iter_lines():
+                    if not line or line.startswith(":"):
+                        continue
+                    if line.startswith("data: "):
+                        payload_text = line[6:]
+                    elif line.startswith("data:"):
+                        payload_text = line[5:]
+                    else:
+                        continue
+                    if payload_text.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk_payload = json.loads(payload_text)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = chunk_payload.get("choices") or []
+                    delta = choices[0].get("delta", {}).get("content") if choices else None
+                    if not delta:
+                        continue
+                    message_delta = extractor.feed(delta)
+                    if not kind_emitted and extractor.kind_value is not None:
+                        kind_emitted = True
+                        yield InterviewerActionChunk(kind="meta", action_kind=extractor.kind_value)
+                    if message_delta:
+                        yield InterviewerActionChunk(kind="delta", text=message_delta)
+            action = validate_interviewer_action(_load_json_content(extractor.full_text()))
+            yield InterviewerActionChunk(kind="final", action=action)
+        except AIProviderRequestError:
+            raise
+        except InterviewerActionValidationError:
+            raise
+        except httpx.HTTPError as error:
+            logger.error(
+                "AI 调用失败(网络) stream_next_interviewer_action model=%s endpoint=%s error=%s",
+                self.settings.model,
+                endpoint,
+                error,
+            )
+            raise AIProviderRequestError(
+                _format_provider_transport_error(error, self.settings, endpoint)
+            ) from error
+        except (KeyError, IndexError, TypeError, ValueError) as error:
+            logger.error(
+                "AI 调用失败(结构) stream_next_interviewer_action model=%s endpoint=%s error=%s",
+                self.settings.model,
+                endpoint,
+                error,
+            )
+            raise InterviewerActionValidationError("AI 返回的面试官动作结构无效") from error
+        except ResumeAnalysisValidationError as error:
+            raise InterviewerActionValidationError("AI 返回的面试官动作结构无效") from error
+        finally:
+            logger.info(
+                "AI 流式调用结束 stream_next_interviewer_action 耗时=%.0fms",
+                (time.perf_counter() - started_at) * 1000,
+            )
 
     def generate_interview_review(
         self,
@@ -691,6 +946,35 @@ class OpenAICompatibleProvider:
             f"\n简历匹配证据：{', '.join(jd_analysis.matching_evidence) or '无'}"
             f"\n已知岗位缺口：{', '.join(jd_analysis.role_gaps) or '无'}"
         )
+
+    def _interview_action_request_messages(
+        self,
+        *,
+        analysis: ResumeAnalysis,
+        target_role: str,
+        session: InterviewSession,
+        starting: bool,
+    ) -> list[dict[str, str]]:
+        """构造面试官动作的 system + user 消息，供同步与流式调用共用。"""
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "你是模拟面试中的真人面试官，目标是围绕候选人的简历进行连续对话式面试。"
+                    "一次只提出一个问题。根据候选人回答决定追问、轻量澄清、缩小范围或换题。"
+                    "不要在面试中讲解知识点、给出参考答案或扮演教练。只返回 JSON。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": self._build_interview_action_prompt(
+                    analysis=analysis,
+                    target_role=target_role,
+                    session=session,
+                    starting=starting,
+                ),
+            },
+        ]
 
     def _build_interview_action_prompt(
         self,
@@ -872,6 +1156,25 @@ def generate_next_interviewer_action_with_provider(
         raise ValueError("请先保存供应商名称、baseUrl、apiKey 和 model")
 
     return build_ai_provider(settings).generate_next_interviewer_action(
+        session=session,
+        analysis=analysis,
+        target_role=target_role,
+        starting=starting,
+    )
+
+
+def stream_next_interviewer_action_with_provider(
+    settings: AIProviderSettings,
+    *,
+    session: InterviewSession,
+    analysis: ResumeAnalysis,
+    target_role: str,
+    starting: bool,
+) -> Iterator[InterviewerActionChunk]:
+    if not settings.is_configured:
+        raise ValueError("请先保存供应商名称、baseUrl、apiKey 和 model")
+
+    return build_ai_provider(settings).stream_next_interviewer_action(
         session=session,
         analysis=analysis,
         target_role=target_role,

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Iterator
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -15,7 +16,7 @@ from .ai_provider import (
     AIProviderRequestError,
     analyze_resume_with_provider,
     generate_interview_review_with_provider,
-    generate_next_interviewer_action_with_provider,
+    stream_next_interviewer_action_with_provider,
     test_ai_provider_connection,
 )
 from .ai_settings import (
@@ -785,6 +786,110 @@ def _awaiting_review_session_from(session: InterviewSession) -> InterviewSession
     )
 
 
+def _sse_frame(event: str, data: object) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _session_payload_dict(session: InterviewSession) -> dict:
+    return _to_session_payload(session).model_dump(by_alias=True)
+
+
+def _assemble_session(
+    session: InterviewSession,
+    message: TranscriptMessage,
+    main_question_count: int,
+    follow_ups: int,
+) -> InterviewSession:
+    return InterviewSession(
+        id=session.id,
+        interview_id=session.interview_id,
+        style=session.style,
+        status=session.status,
+        transcript=[*session.transcript, message],
+        main_question_count=main_question_count,
+        current_main_question_follow_ups=follow_ups,
+        round_kind=session.round_kind,
+    )
+
+
+def _would_downgrade(
+    session: InterviewSession,
+    observed_kind: str,
+    *,
+    starting: bool,
+) -> bool:
+    """AI 返回的 kind 是否会被 resolve_interviewer_action 降级为别的动作（fallback 文案）。"""
+    try:
+        probe = resolve_interviewer_action(
+            InterviewerAction(kind=observed_kind, message="probe"),
+            session,
+            starting=starting,
+        )
+    except InterviewerActionValidationError:
+        return False
+    return probe.kind != observed_kind or probe.message != "probe"
+
+
+def _stream_interviewer_action(
+    *,
+    provider_settings: AIProviderSettings,
+    session: InterviewSession,
+    analysis: ResumeAnalysis,
+    target_role: str,
+    starting: bool,
+) -> Iterator[str]:
+    """消费 provider 流式 chunk，转 SSE 帧；结束时落库并发 done。
+
+    若 AI 的 kind 会被 resolve 降级（caps 边界的 fallback 文案），流期间抑制 delta，
+    在 final 阶段用 reset 帧一次性写出最终文案，避免「逐字显示后又被替换」的闪烁。
+    """
+    suppressed = False
+    try:
+        for chunk in stream_next_interviewer_action_with_provider(
+            provider_settings,
+            session=session,
+            analysis=analysis,
+            target_role=target_role,
+            starting=starting,
+        ):
+            if chunk.kind == "meta":
+                if (
+                    not starting
+                    and chunk.action_kind
+                    and _would_downgrade(session, chunk.action_kind, starting=starting)
+                ):
+                    suppressed = True
+            elif chunk.kind == "delta":
+                if not suppressed:
+                    yield _sse_frame("delta", {"text": chunk.text})
+            elif chunk.kind == "final":
+                resolved = resolve_interviewer_action(chunk.action, session, starting=starting)
+                message, main_question_count, follow_ups = apply_interviewer_action(
+                    session, resolved, starting=starting
+                )
+                if suppressed:
+                    yield _sse_frame("delta", {"text": resolved.message, "reset": True})
+                assembled = _assemble_session(session, message, main_question_count, follow_ups)
+                if starting:
+                    saved = save_session(assembled)
+                    yield _sse_frame("done", _session_payload_dict(saved))
+                    return
+                if resolved.kind == "end_interview":
+                    target = _awaiting_review_session_from(assembled)
+                    update_session(target)
+                    yield _sse_frame("done", _session_payload_dict(target))
+                else:
+                    update_session(assembled)
+                    yield _sse_frame("done", _session_payload_dict(assembled))
+                return
+    except InterviewerActionValidationError as error:
+        yield _sse_frame("error", {"detail": str(error), "status": 502})
+    except AIProviderRequestError as error:
+        yield _sse_frame("error", {"detail": str(error), "status": 502})
+    except ValueError as error:
+        yield _sse_frame("error", {"detail": str(error), "status": 400})
+
+
 def _generate_review_for_session(
     *,
     session: InterviewSession,
@@ -811,8 +916,11 @@ def _generate_review_for_session(
     return payload
 
 
-@app.post("/interviews/{interview_id}/sessions", response_model=InterviewSessionPayload)
-def post_interview_session(interview_id: int, payload: StartSessionPayload | None = None) -> InterviewSessionPayload:
+@app.post("/interviews/{interview_id}/sessions")
+def post_interview_session(
+    interview_id: int,
+    payload: StartSessionPayload | None = None,
+):
     interview = read_interview(interview_id)
     if interview is None:
         raise HTTPException(status_code=404, detail="面试记录不存在")
@@ -835,36 +943,21 @@ def post_interview_session(interview_id: int, payload: StartSessionPayload | Non
         current_main_question_follow_ups=0,
         round_kind=round_kind,
     )
-    try:
-        action = generate_next_interviewer_action_with_provider(
-            active_provider,
+
+    def event_stream() -> Iterator[str]:
+        yield from _stream_interviewer_action(
+            provider_settings=active_provider,
             session=draft_session,
             analysis=interview.analysis,
             target_role=interview.target_role,
             starting=True,
         )
-        resolved_action = resolve_interviewer_action(action, draft_session, starting=True)
-        message, main_question_count, follow_ups = apply_interviewer_action(
-            draft_session, resolved_action, starting=True
-        )
-    except InterviewerActionValidationError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
-    except AIProviderRequestError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
 
-    started_session = InterviewSession(
-        id=draft_session.id,
-        interview_id=draft_session.interview_id,
-        style=draft_session.style,
-        status="in_progress",
-        transcript=[message],
-        main_question_count=main_question_count,
-        current_main_question_follow_ups=follow_ups,
-        round_kind=draft_session.round_kind,
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-    return _to_session_payload(save_session(started_session))
 
 
 @app.get("/interview-sessions/in-progress", response_model=list[ResumeableSessionPayload])
@@ -920,11 +1013,11 @@ def get_interview_session(session_id: int) -> InterviewSessionPayload:
     return _to_session_payload(session)
 
 
-@app.post("/interview-sessions/{session_id}/answers", response_model=InterviewSessionPayload)
+@app.post("/interview-sessions/{session_id}/answers")
 def post_interview_session_answer(
     session_id: int,
     payload: AnswerSessionPayload,
-) -> InterviewSessionPayload:
+):
     session = read_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="进行中面试不存在")
@@ -955,74 +1048,37 @@ def post_interview_session_answer(
     # 每次回答后立即保存，保证刷新或重新打开后可继续。
     update_session(session_with_answer)
 
-    if (
+    early_end = (
         session_with_answer.main_question_count >= DEFAULT_MAIN_QUESTIONS
         and session_with_answer.current_main_question_follow_ups >= DEFAULT_MAX_FOLLOW_UPS
-    ):
-        message, main_question_count, follow_ups = apply_interviewer_action(
-            session_with_answer,
-            InterviewerAction(kind="end_interview", message="本场面试的信息已经足够，我们进入复盘。"),
-        )
-        ending_session = InterviewSession(
-            id=session_with_answer.id,
-            interview_id=session_with_answer.interview_id,
-            style=session_with_answer.style,
-            status="in_progress",
-            transcript=[*session_with_answer.transcript, message],
-            main_question_count=main_question_count,
-            current_main_question_follow_ups=follow_ups,
-            round_kind=session_with_answer.round_kind,
-        )
-        awaiting_review_session = _awaiting_review_session_from(ending_session)
-        update_session(awaiting_review_session)
-        return _to_session_payload(awaiting_review_session)
+    )
 
-    try:
-        action = generate_next_interviewer_action_with_provider(
-            active_provider,
+    def event_stream() -> Iterator[str]:
+        if early_end:
+            message, main_question_count, follow_ups = apply_interviewer_action(
+                session_with_answer,
+                InterviewerAction(kind="end_interview", message="本场面试的信息已经足够，我们进入复盘。"),
+            )
+            ending_session = _assemble_session(
+                session_with_answer, message, main_question_count, follow_ups
+            )
+            awaiting_review_session = _awaiting_review_session_from(ending_session)
+            update_session(awaiting_review_session)
+            yield _sse_frame("done", _session_payload_dict(awaiting_review_session))
+            return
+        yield from _stream_interviewer_action(
+            provider_settings=active_provider,
             session=session_with_answer,
             analysis=interview.analysis,
             target_role=interview.target_role,
             starting=False,
         )
-        resolved_action = resolve_interviewer_action(action, session_with_answer, starting=False)
-        message, main_question_count, follow_ups = apply_interviewer_action(
-            session_with_answer, resolved_action
-        )
-    except InterviewerActionValidationError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
-    except AIProviderRequestError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
 
-    if resolved_action.kind == "end_interview":
-        ending_session = InterviewSession(
-            id=session_with_answer.id,
-            interview_id=session_with_answer.interview_id,
-            style=session_with_answer.style,
-            status="in_progress",
-            transcript=[*session_with_answer.transcript, message],
-            main_question_count=main_question_count,
-            current_main_question_follow_ups=follow_ups,
-            round_kind=session_with_answer.round_kind,
-        )
-        awaiting_review_session = _awaiting_review_session_from(ending_session)
-        update_session(awaiting_review_session)
-        return _to_session_payload(awaiting_review_session)
-
-    advanced_session = InterviewSession(
-        id=session_with_answer.id,
-        interview_id=session_with_answer.interview_id,
-        style=session_with_answer.style,
-        status="in_progress",
-        transcript=[*session_with_answer.transcript, message],
-        main_question_count=main_question_count,
-        current_main_question_follow_ups=follow_ups,
-        round_kind=session_with_answer.round_kind,
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-    update_session(advanced_session)
-    return _to_session_payload(advanced_session)
 
 
 @app.post("/interview-sessions/{session_id}/end", response_model=InterviewSessionPayload)

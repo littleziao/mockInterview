@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from apps.api.app.ai_provider import OpenAICompatibleProvider
+from apps.api.app.ai_provider import InterviewerActionChunk, OpenAICompatibleProvider
 from apps.api.app.ai_settings import AIProviderSettings
 from apps.api.app.interview_review import (
     ABILITY_DIMENSIONS,
@@ -85,9 +86,37 @@ def _create_interview(
     return int(response.json()["id"])
 
 
+def _consume_sse(response) -> tuple[dict | None, list[str], dict | None]:
+    """聚合 SSE 流，返回 (done 负载, delta 文本列表, error 负载)。"""
+    done: dict | None = None
+    error: dict | None = None
+    deltas: list[str] = []
+    event = ""
+    for line in response.iter_lines():
+        if not line or line.startswith(":"):
+            continue
+        if line.startswith("event: "):
+            event = line[len("event: ") :]
+        elif line.startswith("data: "):
+            data = json.loads(line[len("data: ") :])
+            if event == "delta":
+                deltas.append(data.get("text", ""))
+            elif event == "done":
+                done = data
+            elif event == "error":
+                error = data
+    return done, deltas, error
+
+
 def _start_session(client: TestClient, interview_id: int, style: str = "study") -> dict:
-    response = client.post(f"/interviews/{interview_id}/sessions", json={"style": style})
-    return response.json()
+    with client.stream(
+        "POST", f"/interviews/{interview_id}/sessions", json={"style": style}
+    ) as response:
+        assert response.status_code == 200, response.read()
+        done, _deltas, error = _consume_sse(response)
+    assert error is None, f"unexpected SSE error: {error}"
+    assert done is not None, "SSE 流未发出 done 事件"
+    return done
 
 
 def _seed_session(
@@ -228,29 +257,36 @@ def test_answer_flow_preserves_round_kind_for_ai_decision(monkeypatch, tmp_path:
     monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock.sqlite3"))
     observed_round_kinds: list[str] = []
 
-    def fake_next_action(*args, **kwargs):
+    def fake_stream(*args, **kwargs):
         session = kwargs["session"]
         observed_round_kinds.append(session.round_kind)
         if kwargs["starting"]:
-            return InterviewerAction(kind="main_question", message="请介绍你的核心项目。")
-        return InterviewerAction(kind="follow_up", message="请补充这个方案的边界条件。")
+            action = InterviewerAction(kind="main_question", message="请介绍你的核心项目。")
+        else:
+            action = InterviewerAction(kind="follow_up", message="请补充这个方案的边界条件。")
+        yield InterviewerActionChunk(kind="meta", action_kind=action.kind)
+        yield InterviewerActionChunk(kind="delta", text=action.message)
+        yield InterviewerActionChunk(kind="final", action=action)
 
     monkeypatch.setattr(
-        "apps.api.app.main.generate_next_interviewer_action_with_provider",
-        fake_next_action,
+        "apps.api.app.main.stream_next_interviewer_action_with_provider",
+        fake_stream,
     )
 
     with TestClient(app) as client:
         _configure_provider(client)
         interview_id = _create_interview(client)
         started = _start_session(client, interview_id)
-        response = client.post(
+        with client.stream(
+            "POST",
             f"/interview-sessions/{started['id']}/answers",
             json={"answer": "我负责核心链路设计。"},
-        )
-        advanced = response.json()
+        ) as response:
+            assert response.status_code == 200, response.read()
+            advanced, _deltas, error = _consume_sse(response)
 
-    assert response.status_code == 200, response.text
+    assert error is None, f"unexpected SSE error: {error}"
+    assert advanced is not None
     assert advanced["roundKind"] == "peer_technical"
     assert observed_round_kinds == ["peer_technical", "peer_technical"]
 
