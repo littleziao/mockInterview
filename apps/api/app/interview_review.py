@@ -144,7 +144,9 @@ class CompletedInterviewHistoryRecord:
     round_kind: str
     completed_at: str
     transcript: list[TranscriptMessage]
-    review: InterviewReview
+    review: InterviewReview | None
+    review_status: str = "ready"
+    review_error: str = ""
 
 
 def _unwrap_review_payload(data: object) -> object:
@@ -372,6 +374,7 @@ def initialize_interview_review_schema() -> None:
             ("0004_completed_interviews",),
         )
         _migrate_completed_interviews_review_status(connection)
+        _migrate_backfill_orphan_reviews(connection)
 
 
 def _migrate_completed_interviews_review_status(connection: sqlite3.Connection) -> None:
@@ -427,6 +430,37 @@ def _migrate_completed_interviews_review_status(connection: sqlite3.Connection) 
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
         ("0010_completed_interviews_review_status",),
+    )
+
+
+def _migrate_backfill_orphan_reviews(connection: sqlite3.Connection) -> None:
+    """0011：补齐已结束但无 completed_interviews 记录的 session（老代码复盘失败遗留）。
+
+    让这些孤儿 session 进入历史列表，可重新触发复盘生成。幂等：NOT EXISTS 保证只补缺。
+    """
+    already = connection.execute(
+        "SELECT 1 FROM schema_migrations WHERE version = ?",
+        ("0011_backfill_orphan_reviews",),
+    ).fetchone()
+    if already:
+        return
+    connection.execute(
+        """
+        INSERT INTO completed_interviews (
+            interview_id, session_id, transcript_json, review_json, review_status, review_error
+        )
+        SELECT
+            s.interview_id, s.id, s.transcript_json, NULL, 'pending', ''
+        FROM interview_sessions s
+        WHERE s.status IN ('awaiting_review', 'ended')
+          AND NOT EXISTS (
+              SELECT 1 FROM completed_interviews c WHERE c.session_id = s.id
+          )
+        """
+    )
+    connection.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
+        ("0011_backfill_orphan_reviews",),
     )
 
 
@@ -578,6 +612,12 @@ def _build_history_record_from_row(row: sqlite3.Row) -> CompletedInterviewHistor
         TranscriptMessage.model_validate(item)
         for item in json.loads(str(row["transcript_json"]))
     ]
+    review_json_text = row["review_json"]
+    review = (
+        validate_interview_review(json.loads(str(review_json_text)))
+        if review_json_text
+        else None
+    )
     return CompletedInterviewHistoryRecord(
         id=int(row["id"]),
         interview_id=int(row["interview_id"]),
@@ -588,19 +628,21 @@ def _build_history_record_from_row(row: sqlite3.Row) -> CompletedInterviewHistor
         round_kind=str(row["round_kind"]) if "round_kind" in row.keys() else "single_round",
         completed_at=str(row["completed_at"]),
         transcript=transcript,
-        review=validate_interview_review(json.loads(str(row["review_json"]))),
+        review=review,
+        review_status=str(row["review_status"]) if "review_status" in row.keys() else "ready",
+        review_error=str(row["review_error"] or "") if "review_error" in row.keys() else "",
     )
 
 
 def list_completed_interview_history(*, target_role: str = "") -> list[CompletedInterviewHistoryRecord]:
     initialize_interview_review_schema()
     normalized_target_role = target_role.strip()
-    conditions = ["completed_interviews.review_json IS NOT NULL"]
+    conditions: list[str] = []
     parameters: tuple[str, ...] = ()
     if normalized_target_role:
         conditions.append("interviews.target_role = ?")
         parameters = (normalized_target_role,)
-    where_clause = "WHERE " + " AND ".join(conditions)
+    where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
     with connect() as connection:
         rows = connection.execute(
@@ -611,6 +653,8 @@ def list_completed_interview_history(*, target_role: str = "") -> list[Completed
                 completed_interviews.session_id,
                 completed_interviews.transcript_json,
                 completed_interviews.review_json,
+                completed_interviews.review_status,
+                completed_interviews.review_error,
                 completed_interviews.completed_at,
                 interviews.target_role,
                 interviews.interview_mode,

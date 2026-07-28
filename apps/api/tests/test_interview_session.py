@@ -444,6 +444,28 @@ def test_invalid_review_structure_marks_failed_keeps_session_open(monkeypatch, t
     assert _completed_interview_count() == 1
 
 
+def test_history_includes_pending_review_until_generated(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        interview_id = _create_confirmed_interview(client)
+        session = _start_session(client, interview_id)
+        # 结束面试即落库 pending 记录，复盘尚未生成也应进入历史列表。
+        client.post(f"/interview-sessions/{session['id']}/end")
+
+        history = client.get("/history").json()
+        record = next(r for r in history["records"] if r["sessionId"] == session["id"])
+        assert record["reviewStatus"] == "pending"
+        assert record["review"] is None
+        # 趋势只统计已生成复盘的，不含 pending 记录。
+        assert all(
+            not any(p["historyRecordId"] == record["id"] for p in trend["points"])
+            for trend in history["trends"]
+        )
+
+
 def test_last_main_question_answer_can_still_produce_follow_up(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
     monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))

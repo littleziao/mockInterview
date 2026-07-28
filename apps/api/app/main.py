@@ -581,7 +581,9 @@ class HistoryRecordPayload(BaseModel):
     round_kind: str = Field(serialization_alias="roundKind")
     round_title: str = Field(serialization_alias="roundTitle")
     completed_at: str = Field(serialization_alias="completedAt")
-    review: InterviewReviewPayload
+    review: InterviewReviewPayload | None = None
+    review_status: str = Field(default="ready", serialization_alias="reviewStatus")
+    review_error: str = Field(default="", serialization_alias="reviewError")
     transcript: list[TranscriptMessagePayload]
 
 
@@ -690,7 +692,9 @@ def _to_history_record_payload(record: CompletedInterviewHistoryRecord) -> Histo
         round_kind=round_fields["round_kind"],
         round_title=round_fields["round_title"],
         completed_at=record.completed_at,
-        review=_to_review_payload(record.review),
+        review=_to_review_payload(record.review) if record.review is not None else None,
+        review_status=record.review_status,
+        review_error=record.review_error,
         transcript=[_to_transcript_payload(message) for message in record.transcript],
     )
 
@@ -701,6 +705,8 @@ def _build_trends(records: list[CompletedInterviewHistoryRecord]) -> list[TrendD
     for dimension in ABILITY_DIMENSIONS:
         points: list[TrendPointPayload] = []
         for record in chronological_records:
+            if record.review is None:
+                continue
             score = next(
                 (
                     ability_score.score

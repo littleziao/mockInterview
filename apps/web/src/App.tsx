@@ -230,7 +230,9 @@ type HistoryRecord = {
   roundKind: string;
   roundTitle: string;
   completedAt: string;
-  review: InterviewReview;
+  review: InterviewReview | null;
+  reviewStatus?: "pending" | "ready" | "failed";
+  reviewError?: string;
   transcript: TranscriptMessage[];
 };
 
@@ -1993,6 +1995,7 @@ function HistoryPage() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [pendingDeleteRecord, setPendingDeleteRecord] = useState<HistoryRecord | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const [generatingSessionId, setGeneratingSessionId] = useState<number | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -2060,12 +2063,43 @@ function HistoryPage() {
     }
   }
 
+  async function regenerateReview(record: HistoryRecord) {
+    setError("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/interview-sessions/${record.sessionId}/review`, {
+        method: "POST"
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(payload?.detail || "生成复盘失败");
+      }
+      setGeneratingSessionId(record.sessionId);
+      setReloadToken((current) => current + 1);
+    } catch (regenerateError) {
+      setError(regenerateError instanceof Error ? regenerateError.message : "生成复盘失败");
+    }
+  }
+
+  // 生成中：轮询历史直到该记录 ready（有 review）或 failed。
+  useEffect(() => {
+    if (generatingSessionId === null) {
+      return;
+    }
+    const target = history.records.find((record) => record.sessionId === generatingSessionId);
+    if (target && (target.review || target.reviewStatus === "failed")) {
+      setGeneratingSessionId(null);
+      return;
+    }
+    const timer = window.setTimeout(() => setReloadToken((current) => current + 1), 3000);
+    return () => window.clearTimeout(timer);
+  }, [generatingSessionId, history, reloadToken]);
+
   return (
     <section className="panel historyPage" aria-labelledby="history-title">
       <div className="sectionHeader">
         <div>
           <h2 id="history-title">历史与趋势</h2>
-          <p>只统计已完成并生成复盘的本地面试记录。</p>
+          <p>已完成与待复盘的本地面试记录；趋势只统计已生成复盘的记录。</p>
         </div>
         <div className="historyFilter" aria-label="目标岗位筛选">
           <button
@@ -2119,7 +2153,7 @@ function HistoryPage() {
 
           <div className="historyLayout">
             <section className="historyList" aria-labelledby="history-list-title">
-              <h3 id="history-list-title">完成记录</h3>
+              <h3 id="history-list-title">面试记录</h3>
               <ul aria-label="已完成面试记录列表">
                 {history.records.map((record) => {
                   const modeLabel =
@@ -2133,13 +2167,30 @@ function HistoryPage() {
                         <span>
                           {formatCompletedAt(record.completedAt)} · {modeLabel} · {styleLabel}
                           {record.roundTitle ? ` · ${record.roundTitle}` : ""}
+                          {record.reviewStatus === "failed" ? " · 复盘生成失败" : !record.review ? " · 待生成复盘" : ""}
                         </span>
                       </div>
                       <div className="historyItemActions">
-                        <button className="secondaryButton" onClick={() => setSelectedRecordId(record.id)} type="button">
-                          <Eye size={16} aria-hidden="true" />
-                          查看复盘
-                        </button>
+                        {record.review ? (
+                          <button className="secondaryButton" onClick={() => setSelectedRecordId(record.id)} type="button">
+                            <Eye size={16} aria-hidden="true" />
+                            查看复盘
+                          </button>
+                        ) : (
+                          <button
+                            className="primaryButton"
+                            disabled={generatingSessionId === record.sessionId}
+                            onClick={() => void regenerateReview(record)}
+                            type="button"
+                          >
+                            <Sparkles size={16} aria-hidden="true" />
+                            {generatingSessionId === record.sessionId
+                              ? "生成中"
+                              : record.reviewStatus === "failed"
+                                ? "重新生成"
+                                : "生成复盘"}
+                          </button>
+                        )}
                         <button
                           aria-label={`删除${record.targetRole || "由简历推断"}完成记录`}
                           className="dangerButton"
@@ -2188,29 +2239,41 @@ function HistoryPage() {
 
           {selectedRecord ? (
             <section className="historyReview" aria-labelledby="history-review-title">
-              <div className="sectionHeader compact">
-                <div>
-                  <h3 id="history-review-title">历史复盘详情</h3>
-                  <p>{selectedRecord.review.overallEvaluation}</p>
+              {selectedRecord.review ? (
+                <>
+                  <div className="sectionHeader compact">
+                    <div>
+                      <h3 id="history-review-title">历史复盘详情</h3>
+                      <p>{selectedRecord.review.overallEvaluation}</p>
+                    </div>
+                  </div>
+                  <div className="reviewOverview">
+                    <section className="reviewSummary" aria-labelledby="history-review-summary">
+                      <h3 id="history-review-summary">总体评价</h3>
+                      <p>{selectedRecord.review.overallEvaluation}</p>
+                    </section>
+                    <AbilityRadar scores={selectedRecord.review.abilityScores} />
+                  </div>
+                  <ReviewConversationSection review={selectedRecord.review} transcript={selectedRecord.transcript} />
+                  <JDMatchAnalysisSection review={selectedRecord.review} />
+                  <div className="reviewGrid" aria-label="跨题总结复盘">
+                    <ReviewSection items={selectedRecord.review.highlights} title="亮点" />
+                    <ReviewSection items={selectedRecord.review.mainIssues} title="主要问题" />
+                    <ReviewSection items={selectedRecord.review.improvedExpressionExamples} title="可改进表达示例" />
+                    <ReviewSection items={selectedRecord.review.knowledgeReferences} title="知识点参考" />
+                    <ReviewSection items={selectedRecord.review.learningFramework} title="学习框架" />
+                    <ReviewSection items={selectedRecord.review.nextPracticeSuggestions} title="下一次练习建议" />
+                  </div>
+                </>
+              ) : (
+                <div className="emptyRouteState">
+                  <AlertCircle size={22} aria-hidden="true" />
+                  <div>
+                    <h3 id="history-review-title">该面试复盘尚未生成</h3>
+                    <p>在左侧列表点击「生成复盘」即可（重新）生成结构化复盘。</p>
+                  </div>
                 </div>
-              </div>
-              <div className="reviewOverview">
-                <section className="reviewSummary" aria-labelledby="history-review-summary">
-                  <h3 id="history-review-summary">总体评价</h3>
-                  <p>{selectedRecord.review.overallEvaluation}</p>
-                </section>
-                <AbilityRadar scores={selectedRecord.review.abilityScores} />
-              </div>
-              <ReviewConversationSection review={selectedRecord.review} transcript={selectedRecord.transcript} />
-              <JDMatchAnalysisSection review={selectedRecord.review} />
-              <div className="reviewGrid" aria-label="跨题总结复盘">
-                <ReviewSection items={selectedRecord.review.highlights} title="亮点" />
-                <ReviewSection items={selectedRecord.review.mainIssues} title="主要问题" />
-                <ReviewSection items={selectedRecord.review.improvedExpressionExamples} title="可改进表达示例" />
-                <ReviewSection items={selectedRecord.review.knowledgeReferences} title="知识点参考" />
-                <ReviewSection items={selectedRecord.review.learningFramework} title="学习框架" />
-                <ReviewSection items={selectedRecord.review.nextPracticeSuggestions} title="下一次练习建议" />
-              </div>
+              )}
             </section>
           ) : null}
         </>
