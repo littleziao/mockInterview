@@ -336,22 +336,29 @@ def test_user_confirms_review_generation_after_interview_ends(monkeypatch, tmp_p
     assert ended_response.status_code == 200, ended_response.text
     assert ended["status"] == "awaiting_review"
     assert ended["review"] is None
-    assert completed_count_before_review == 0
+    assert ended["reviewStatus"] == "pending"
+    # 结束面试即落库 pending 记录，复盘未生成前记录就已存在（永不丢）。
+    assert completed_count_before_review == 1
+    # POST /review 异步触发，立即返回 pending，不阻塞。
     assert review_response.status_code == 200, review_response.text
-    assert reviewed["status"] == "ended"
-    assert reviewed["review"]["overallEvaluation"]
-    assert reloaded["review"]["overallEvaluation"] == reviewed["review"]["overallEvaluation"]
-    assert reviewed["review"]["highlights"]
-    assert reviewed["review"]["mainIssues"]
-    assert reviewed["review"]["questionReviews"]
-    assert reviewed["review"]["improvedExpressionExamples"]
-    assert reviewed["review"]["sampleAnswers"]
-    assert "唯一标准答案" in reviewed["review"]["sampleAnswers"][0]
-    assert reviewed["review"]["knowledgeReferences"]
-    assert reviewed["review"]["learningFramework"]
-    assert reviewed["review"]["nextPracticeSuggestions"]
-    assert [score["dimension"] for score in reviewed["review"]["abilityScores"]] == list(ABILITY_DIMENSIONS)
-    assert all(1 <= score["score"] <= 5 for score in reviewed["review"]["abilityScores"])
+    assert reviewed["status"] == "awaiting_review"
+    assert reviewed["reviewStatus"] == "pending"
+    assert reviewed["review"] is None
+    # 后台任务（TestClient 同步执行）跑完后，GET 查到 ready + ended。
+    assert reloaded["status"] == "ended"
+    assert reloaded["reviewStatus"] == "ready"
+    assert reloaded["review"]["overallEvaluation"]
+    assert reloaded["review"]["highlights"]
+    assert reloaded["review"]["mainIssues"]
+    assert reloaded["review"]["questionReviews"]
+    assert reloaded["review"]["improvedExpressionExamples"]
+    assert reloaded["review"]["sampleAnswers"]
+    assert "唯一标准答案" in reloaded["review"]["sampleAnswers"][0]
+    assert reloaded["review"]["knowledgeReferences"]
+    assert reloaded["review"]["learningFramework"]
+    assert reloaded["review"]["nextPracticeSuggestions"]
+    assert [score["dimension"] for score in reloaded["review"]["abilityScores"]] == list(ABILITY_DIMENSIONS)
+    assert all(1 <= score["score"] <= 5 for score in reloaded["review"]["abilityScores"])
     assert _completed_interview_count() == 1
     assert completed_record is not None
     assert completed_record.interview_id == interview_id
@@ -382,7 +389,8 @@ def test_jd_interview_review_includes_and_persists_jd_match_analysis(monkeypatch
         history = client.get("/history")
 
     assert review_response.status_code == 200
-    jd_match = review_response.json()["review"]["jdMatchAnalysis"]
+    assert review_response.json()["reviewStatus"] == "pending"
+    jd_match = reloaded.json()["review"]["jdMatchAnalysis"]
     assert jd_match["matchingEvidence"]
     assert jd_match["roleGaps"]
     assert jd_match["projectExpressionImprovements"]
@@ -390,7 +398,7 @@ def test_jd_interview_review_includes_and_persists_jd_match_analysis(monkeypatch
     assert reloaded.json()["review"]["jdMatchAnalysis"] == jd_match
     assert history.json()["records"][0]["review"]["jdMatchAnalysis"] == jd_match
     # JD 匹配分析不替代既有 6 维能力评分或增加趋势维度。
-    assert len(review_response.json()["review"]["abilityScores"]) == len(ABILITY_DIMENSIONS)
+    assert len(reloaded.json()["review"]["abilityScores"]) == len(ABILITY_DIMENSIONS)
     assert [trend["dimension"] for trend in history.json()["trends"]] == list(ABILITY_DIMENSIONS)
 
 
@@ -404,12 +412,14 @@ def test_no_jd_interview_review_omits_jd_match_analysis(monkeypatch, tmp_path: P
         session = _start_session(client, interview_id)
         client.post(f"/interview-sessions/{session['id']}/end")
         review_response = client.post(f"/interview-sessions/{session['id']}/review")
+        reloaded = client.get(f"/interview-sessions/{session['id']}")
 
     assert review_response.status_code == 200
-    assert review_response.json()["review"]["jdMatchAnalysis"] is None
+    assert reloaded.json()["reviewStatus"] == "ready"
+    assert reloaded.json()["review"]["jdMatchAnalysis"] is None
 
 
-def test_invalid_review_structure_returns_502_without_ending_session(monkeypatch, tmp_path: Path) -> None:
+def test_invalid_review_structure_marks_failed_keeps_session_open(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
     monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
 
@@ -423,12 +433,15 @@ def test_invalid_review_structure_returns_502_without_ending_session(monkeypatch
 
     assert ended_response.status_code == 200
     assert ended_response.json()["status"] == "awaiting_review"
+    # POST /review 异步触发，立即返回 pending；后台任务校验失败后置 failed，但记录已落库不丢。
     assert response.status_code == 200
     assert response.json()["status"] == "awaiting_review"
+    assert response.json()["reviewStatus"] == "pending"
     assert response.json()["review"] is None
-    assert response.json()["reviewError"] == "AI 返回的复盘结构无效"
+    assert reloaded["reviewStatus"] == "failed"
+    assert reloaded["reviewError"] == "AI 返回的复盘结构无效"
     assert reloaded["status"] == "awaiting_review"
-    assert _completed_interview_count() == 0
+    assert _completed_interview_count() == 1
 
 
 def test_last_main_question_answer_can_still_produce_follow_up(monkeypatch, tmp_path: Path) -> None:

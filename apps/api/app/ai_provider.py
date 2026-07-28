@@ -8,6 +8,7 @@ import time
 from typing import Iterator, Literal, Protocol
 
 import httpx
+from pydantic import ValidationError
 
 from .ai_settings import AIProviderSettings
 from .interview_session import (
@@ -807,8 +808,6 @@ class OpenAICompatibleProvider:
                 error,
             )
             raise InterviewerActionValidationError("AI 返回的面试官动作结构无效") from error
-        except ResumeAnalysisValidationError as error:
-            raise InterviewerActionValidationError("AI 返回的面试官动作结构无效") from error
         finally:
             logger.info(
                 "AI 流式调用结束 stream_next_interviewer_action 耗时=%.0fms",
@@ -861,7 +860,7 @@ class OpenAICompatibleProvider:
             _raise_provider_http_error(response, self.settings, endpoint)
             payload = response.json()
             content = payload["choices"][0]["message"]["content"]
-            result = validate_interview_review(_load_json_content(content))
+            parsed = _load_json_content(content)
         except AIProviderRequestError:
             raise
         except httpx.HTTPError as error:
@@ -881,9 +880,32 @@ class OpenAICompatibleProvider:
                 endpoint,
                 error,
             )
+            logger.warning(
+                "AI 返回内容解析失败 model=%s endpoint=%s content=%.1500s",
+                self.settings.model,
+                endpoint,
+                content if "content" in locals() else "",
+            )
             raise InterviewReviewValidationError("AI 返回的复盘结构无效") from error
-        except ResumeAnalysisValidationError as error:
-            raise InterviewReviewValidationError("AI 返回的复盘结构无效") from error
+
+        try:
+            result = validate_interview_review(parsed)
+        except InterviewReviewValidationError as error:
+            cause = error.__cause__
+            logger.error(
+                "AI 调用失败(结构) generate_interview_review model=%s endpoint=%s error=%s",
+                self.settings.model,
+                endpoint,
+                error,
+            )
+            logger.warning(
+                "AI 返回的复盘结构无效 model=%s endpoint=%s content=%.1500s errors=%s",
+                self.settings.model,
+                endpoint,
+                content,
+                cause.errors() if isinstance(cause, ValidationError) else str(error),
+            )
+            raise
 
         logger.info(
             "AI 调用成功 generate_interview_review 耗时=%.0fms",

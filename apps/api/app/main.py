@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, Iterator
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -68,13 +68,13 @@ from .interview_review import (
     ABILITY_DIMENSIONS,
     CompletedInterviewHistoryRecord,
     InterviewReview,
-    InterviewReviewValidationError,
     delete_completed_interview_history_record,
     initialize_interview_review_schema,
     list_completed_interview_history,
     list_completed_target_roles,
     read_completed_interview_by_session,
     save_completed_interview,
+    update_completed_interview_review,
 )
 
 
@@ -501,6 +501,7 @@ class InterviewSessionPayload(BaseModel):
     round_focus: str = Field(default="", serialization_alias="roundFocus")
     transcript: list[TranscriptMessagePayload]
     review: "InterviewReviewPayload | None" = None
+    review_status: str = Field(default="ready", serialization_alias="reviewStatus")
     review_error: str = Field(default="", serialization_alias="reviewError")
 
 
@@ -637,7 +638,10 @@ def _to_session_payload(session: InterviewSession) -> InterviewSessionPayload:
     )
     completed_record = read_completed_interview_by_session(session.id)
     if completed_record is not None:
-        payload.review = _to_review_payload(completed_record.review)
+        payload.review_status = completed_record.review_status
+        payload.review_error = completed_record.review_error
+        if completed_record.review is not None:
+            payload.review = _to_review_payload(completed_record.review)
     return payload
 
 
@@ -786,6 +790,14 @@ def _awaiting_review_session_from(session: InterviewSession) -> InterviewSession
     )
 
 
+def _finalize_awaiting_review(session: InterviewSession) -> InterviewSession:
+    """结束面试：转 awaiting_review 并立即落库 completed_interview(pending)，记录永不丢。"""
+    awaiting_review_session = _awaiting_review_session_from(session)
+    update_session(awaiting_review_session)
+    save_completed_interview(awaiting_review_session, status="pending")
+    return awaiting_review_session
+
+
 def _sse_frame(event: str, data: object) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
@@ -875,8 +887,7 @@ def _stream_interviewer_action(
                     yield _sse_frame("done", _session_payload_dict(saved))
                     return
                 if resolved.kind == "end_interview":
-                    target = _awaiting_review_session_from(assembled)
-                    update_session(target)
+                    target = _finalize_awaiting_review(assembled)
                     yield _sse_frame("done", _session_payload_dict(target))
                 else:
                     update_session(assembled)
@@ -890,30 +901,41 @@ def _stream_interviewer_action(
         yield _sse_frame("error", {"detail": str(error), "status": 400})
 
 
-def _generate_review_for_session(
-    *,
-    session: InterviewSession,
-    interview: InterviewRecord,
-    active_provider: AIProviderSettings,
-) -> InterviewSessionPayload:
-    payload = _to_session_payload(session)
+def _generate_review_task(session_id: int) -> None:
+    """后台生成复盘：成功落 review+ready 并推进 session ended；失败落 failed 供前端重试。
+
+    BackgroundTask 跑在 threadpool，任何未预期异常都必须落 failed，避免记录卡在 pending
+    只能等前端轮询超时。
+    """
     try:
+        session = read_session(session_id)
+        if session is None:
+            logger.warning("复盘后台任务跳过：session 不存在 session_id=%s", session_id)
+            return
+        interview = read_interview(session.interview_id)
+        if interview is None:
+            logger.warning("复盘后台任务跳过：interview 不存在 session_id=%s", session_id)
+            return
+        provider = _require_active_provider()
         review = generate_interview_review_with_provider(
-            active_provider,
+            provider,
             session=session,
             analysis=interview.analysis,
             target_role=interview.target_role,
         )
-    except (InterviewReviewValidationError, AIProviderRequestError, ValueError) as error:
-        payload.review_error = str(error)
-        return payload
+    except Exception as error:
+        logger.exception("复盘后台任务失败 session_id=%s", session_id)
+        try:
+            update_completed_interview_review(
+                session_id, status="failed", error=str(error) or "复盘生成失败"
+            )
+        except Exception:
+            logger.exception("更新复盘失败状态也失败 session_id=%s", session_id)
+        return
 
+    update_completed_interview_review(session_id, status="ready", review=review)
     ended_session = _ended_session_from(session)
     update_session(ended_session)
-    save_completed_interview(ended_session, review)
-    payload = _to_session_payload(ended_session)
-    payload.review = _to_review_payload(review)
-    return payload
 
 
 @app.post("/interviews/{interview_id}/sessions")
@@ -1062,8 +1084,7 @@ def post_interview_session_answer(
             ending_session = _assemble_session(
                 session_with_answer, message, main_question_count, follow_ups
             )
-            awaiting_review_session = _awaiting_review_session_from(ending_session)
-            update_session(awaiting_review_session)
+            awaiting_review_session = _finalize_awaiting_review(ending_session)
             yield _sse_frame("done", _session_payload_dict(awaiting_review_session))
             return
         yield from _stream_interviewer_action(
@@ -1089,8 +1110,7 @@ def post_interview_session_end(session_id: int) -> InterviewSessionPayload:
     if session.status != "in_progress":
         raise HTTPException(status_code=400, detail="该面试已结束或等待复盘确认")
 
-    awaiting_review_session = _awaiting_review_session_from(session)
-    update_session(awaiting_review_session)
+    awaiting_review_session = _finalize_awaiting_review(session)
     return _to_session_payload(awaiting_review_session)
 
 
@@ -1117,7 +1137,10 @@ def post_interview_session_abandon(session_id: int) -> InterviewSessionPayload:
 
 
 @app.post("/interview-sessions/{session_id}/review", response_model=InterviewSessionPayload)
-def post_interview_session_review(session_id: int) -> InterviewSessionPayload:
+def post_interview_session_review(
+    session_id: int,
+    background_tasks: BackgroundTasks,
+) -> InterviewSessionPayload:
     session = read_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="进行中面试不存在")
@@ -1126,16 +1149,20 @@ def post_interview_session_review(session_id: int) -> InterviewSessionPayload:
     if session.status != "awaiting_review":
         raise HTTPException(status_code=400, detail="请先结束面试，再生成复盘")
 
-    interview = read_interview(session.interview_id)
-    if interview is None:
-        raise HTTPException(status_code=404, detail="面试记录不存在")
-    active_provider = _require_active_provider()
+    existing = read_completed_interview_by_session(session_id)
+    if existing is not None and existing.review_status == "ready":
+        # 已有就绪复盘，幂等返回，不重复生成。
+        return _to_session_payload(session)
 
-    return _generate_review_for_session(
-        session=session,
-        interview=interview,
-        active_provider=active_provider,
-    )
+    # 触发 / 重新触发后台生成：置 pending 并登记任务，立即返回不阻塞（治 499）。
+    if existing is None:
+        save_completed_interview(session, status="pending")
+    else:
+        update_completed_interview_review(session_id, status="pending", error="")
+    background_tasks.add_task(_generate_review_task, session_id)
+
+    refreshed = read_session(session_id)
+    return _to_session_payload(refreshed)
 
 
 def _round_status_from_session_status(status: str) -> str:

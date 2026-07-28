@@ -104,15 +104,16 @@ class JDMatchAnalysis(BaseModel):
 
 
 class InterviewReview(BaseModel):
+    # 列表字段允许为空：AI 返回稀疏结构时不再整体校验失败（前端空数组按“暂无”渲染）。
     overall_evaluation: str = Field(min_length=1)
-    highlights: list[str] = Field(min_length=1)
-    main_issues: list[str] = Field(min_length=1)
-    question_reviews: list[str] = Field(min_length=1)
-    improved_expression_examples: list[str] = Field(min_length=1)
-    sample_answers: list[str] = Field(min_length=1)
-    knowledge_references: list[str] = Field(min_length=1)
-    learning_framework: list[str] = Field(min_length=1)
-    next_practice_suggestions: list[str] = Field(min_length=1)
+    highlights: list[str] = Field(default_factory=list)
+    main_issues: list[str] = Field(default_factory=list)
+    question_reviews: list[str] = Field(default_factory=list)
+    improved_expression_examples: list[str] = Field(default_factory=list)
+    sample_answers: list[str] = Field(default_factory=list)
+    knowledge_references: list[str] = Field(default_factory=list)
+    learning_framework: list[str] = Field(default_factory=list)
+    next_practice_suggestions: list[str] = Field(default_factory=list)
     ability_scores: list[AbilityScore] = Field(min_length=len(ABILITY_DIMENSIONS), max_length=len(ABILITY_DIMENSIONS))
     jd_match_analysis: JDMatchAnalysis | None = None
 
@@ -127,7 +128,9 @@ class CompletedInterviewRecord:
     interview_id: int
     session_id: int
     transcript: list[TranscriptMessage]
-    review: InterviewReview
+    review: InterviewReview | None
+    review_status: str = "ready"
+    review_error: str = ""
 
 
 @dataclass(frozen=True)
@@ -279,7 +282,18 @@ def _normalize_ability_scores(value: object) -> list[dict[str, object]]:
             or "基于本次面试表现给出的能力评分。",
         }
 
-    return [by_dimension[dimension] for dimension in ABILITY_DIMENSIONS if dimension in by_dimension]
+    # 缺失或维度名不匹配的维度补默认值，保证永远返回恰好 6 个、顺序对齐 ABILITY_DIMENSIONS，
+    # 让 schema 的 min/max=6 与顺序校验稳定通过。
+    default_rationale = "基于本次面试表现给出的能力评分。"
+    completed: list[dict[str, object]] = []
+    for dimension in ABILITY_DIMENSIONS:
+        if dimension in by_dimension:
+            completed.append(by_dimension[dimension])
+        else:
+            completed.append(
+                {"dimension": dimension, "score": 3, "rationale": default_rationale}
+            )
+    return completed
 
 
 def _normalize_jd_match_analysis(sub_data: object) -> dict[str, list[str]] | None:
@@ -357,38 +371,138 @@ def initialize_interview_review_schema() -> None:
             "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
             ("0004_completed_interviews",),
         )
+        _migrate_completed_interviews_review_status(connection)
 
 
-def save_completed_interview(session: InterviewSession, review: InterviewReview) -> CompletedInterviewRecord:
+def _migrate_completed_interviews_review_status(connection: sqlite3.Connection) -> None:
+    """0010：复盘异步化——review_json 改可空 + 新增 review_status / review_error。
+
+    SQLite 无法直接修改列约束，用「建新表 → 拷贝 → 替换」重建，幂等。
+    """
+    already_migrated = connection.execute(
+        "SELECT 1 FROM schema_migrations WHERE version = ?",
+        ("0010_completed_interviews_review_status",),
+    ).fetchone()
+    if already_migrated:
+        return
+
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(completed_interviews)")}
+    if "review_status" in columns:
+        # 老表已含新列（例如手动补过），仅登记迁移版本。
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
+            ("0010_completed_interviews_review_status",),
+        )
+        return
+
+    connection.execute(
+        """
+        CREATE TABLE completed_interviews_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            interview_id INTEGER NOT NULL,
+            session_id INTEGER NOT NULL UNIQUE,
+            transcript_json TEXT NOT NULL,
+            review_json TEXT,
+            review_status TEXT NOT NULL DEFAULT 'ready',
+            review_error TEXT NOT NULL DEFAULT '',
+            completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (interview_id) REFERENCES interviews(id),
+            FOREIGN KEY (session_id) REFERENCES interview_sessions(id)
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO completed_interviews_new (
+            id, interview_id, session_id, transcript_json, review_json,
+            review_status, review_error, completed_at
+        )
+        SELECT id, interview_id, session_id, transcript_json, review_json,
+               'ready', '', completed_at
+        FROM completed_interviews
+        """
+    )
+    connection.execute("DROP TABLE completed_interviews")
+    connection.execute("ALTER TABLE completed_interviews_new RENAME TO completed_interviews")
+    connection.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
+        ("0010_completed_interviews_review_status",),
+    )
+
+
+def save_completed_interview(
+    session: InterviewSession,
+    review: InterviewReview | None = None,
+    *,
+    status: str | None = None,
+    error: str = "",
+) -> CompletedInterviewRecord:
     initialize_interview_review_schema()
+    effective_status = status or ("ready" if review is not None else "pending")
     transcript_json = json.dumps(
         [message.model_dump() for message in session.transcript],
         ensure_ascii=False,
     )
+    review_json = review.model_dump_json() if review is not None else None
     with connect() as connection:
-        cursor = connection.execute(
+        connection.execute(
             """
-            INSERT OR REPLACE INTO completed_interviews (
-                interview_id, session_id, transcript_json, review_json
+            INSERT INTO completed_interviews (
+                interview_id, session_id, transcript_json, review_json,
+                review_status, review_error
             )
-            VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                interview_id = excluded.interview_id,
+                transcript_json = excluded.transcript_json,
+                review_json = excluded.review_json,
+                review_status = excluded.review_status,
+                review_error = excluded.review_error
             """,
             (
                 session.interview_id,
                 session.id,
                 transcript_json,
-                review.model_dump_json(),
+                review_json,
+                effective_status,
+                error,
             ),
         )
-        record_id = int(cursor.lastrowid)
+        row = connection.execute(
+            "SELECT id FROM completed_interviews WHERE session_id = ?",
+            (session.id,),
+        ).fetchone()
 
     return CompletedInterviewRecord(
-        id=record_id,
+        id=int(row["id"]),
         interview_id=session.interview_id,
         session_id=session.id,
         transcript=list(session.transcript),
         review=review,
+        review_status=effective_status,
+        review_error=error,
     )
+
+
+def update_completed_interview_review(
+    session_id: int,
+    *,
+    status: str,
+    review: InterviewReview | None = None,
+    error: str = "",
+) -> None:
+    """仅更新复盘结果与状态，供后台生成任务使用。记录必须已存在。"""
+    initialize_interview_review_schema()
+    review_json = review.model_dump_json() if review is not None else None
+    with connect() as connection:
+        connection.execute(
+            """
+            UPDATE completed_interviews
+            SET review_json = ?, review_status = ?, review_error = ?
+            WHERE session_id = ?
+            """,
+            (review_json, status, error, session_id),
+        )
 
 
 def read_completed_interview_by_session(session_id: int) -> CompletedInterviewRecord | None:
@@ -396,7 +510,8 @@ def read_completed_interview_by_session(session_id: int) -> CompletedInterviewRe
     with connect() as connection:
         row: sqlite3.Row | None = connection.execute(
             """
-            SELECT id, interview_id, session_id, transcript_json, review_json
+            SELECT id, interview_id, session_id, transcript_json, review_json,
+                   review_status, review_error
             FROM completed_interviews
             WHERE session_id = ?
             """,
@@ -410,12 +525,20 @@ def read_completed_interview_by_session(session_id: int) -> CompletedInterviewRe
         TranscriptMessage.model_validate(item)
         for item in json.loads(str(row["transcript_json"]))
     ]
+    review_json_text = row["review_json"]
+    review = (
+        validate_interview_review(json.loads(str(review_json_text)))
+        if review_json_text
+        else None
+    )
     return CompletedInterviewRecord(
         id=int(row["id"]),
         interview_id=int(row["interview_id"]),
         session_id=int(row["session_id"]),
         transcript=transcript,
-        review=validate_interview_review(json.loads(str(row["review_json"]))),
+        review=review,
+        review_status=str(row["review_status"]),
+        review_error=str(row["review_error"] or ""),
     )
 
 
@@ -472,11 +595,12 @@ def _build_history_record_from_row(row: sqlite3.Row) -> CompletedInterviewHistor
 def list_completed_interview_history(*, target_role: str = "") -> list[CompletedInterviewHistoryRecord]:
     initialize_interview_review_schema()
     normalized_target_role = target_role.strip()
+    conditions = ["completed_interviews.review_json IS NOT NULL"]
     parameters: tuple[str, ...] = ()
-    where_clause = ""
     if normalized_target_role:
-        where_clause = "WHERE interviews.target_role = ?"
+        conditions.append("interviews.target_role = ?")
         parameters = (normalized_target_role,)
+    where_clause = "WHERE " + " AND ".join(conditions)
 
     with connect() as connection:
         rows = connection.execute(
@@ -512,7 +636,7 @@ def list_completed_target_roles() -> list[str]:
             SELECT DISTINCT target_role
             FROM interviews
             JOIN completed_interviews ON completed_interviews.interview_id = interviews.id
-            WHERE target_role <> ''
+            WHERE target_role <> '' AND completed_interviews.review_json IS NOT NULL
             ORDER BY target_role ASC
             """
         ).fetchall()
