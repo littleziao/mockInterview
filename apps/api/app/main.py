@@ -1146,17 +1146,19 @@ def post_interview_session_abandon(session_id: int) -> InterviewSessionPayload:
 def post_interview_session_review(
     session_id: int,
     background_tasks: BackgroundTasks,
+    force: bool = False,
 ) -> InterviewSessionPayload:
     session = read_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="进行中面试不存在")
-    if session.status == "ended":
+    # force=true 时允许对已结束（ended）的面试重新生成复盘；否则已结束直接幂等返回。
+    if session.status == "ended" and not force:
         return _to_session_payload(session)
-    if session.status != "awaiting_review":
+    if session.status not in ("awaiting_review", "ended"):
         raise HTTPException(status_code=400, detail="请先结束面试，再生成复盘")
 
     existing = read_completed_interview_by_session(session_id)
-    if existing is not None and existing.review_status == "ready":
+    if existing is not None and existing.review_status == "ready" and not force:
         # 已有就绪复盘，幂等返回，不重复生成。
         return _to_session_payload(session)
 

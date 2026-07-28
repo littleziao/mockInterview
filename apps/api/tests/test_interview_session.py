@@ -466,6 +466,33 @@ def test_history_includes_pending_review_until_generated(monkeypatch, tmp_path: 
         )
 
 
+def test_force_regenerates_already_ready_review(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
+    monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))
+
+    with TestClient(app) as client:
+        _configure_provider(client)
+        interview_id = _create_confirmed_interview(client)
+        session = _start_session(client, interview_id)
+        _answer(client, session["id"], "我负责简历分析和结构化输出校验。")
+        client.post(f"/interview-sessions/{session['id']}/end")
+        client.post(f"/interview-sessions/{session['id']}/review")
+        # 复盘已就绪。
+        assert client.get(f"/interview-sessions/{session['id']}").json()["reviewStatus"] == "ready"
+
+        # 不带 force：幂等返回，不重新触发（仍 ready）。
+        idle = client.post(f"/interview-sessions/{session['id']}/review")
+        assert idle.json()["reviewStatus"] == "ready"
+
+        # 带 force：强制重新生成，响应置 pending，后台任务跑完又 ready。
+        forced = client.post(f"/interview-sessions/{session['id']}/review?force=true")
+        assert forced.status_code == 200
+        assert forced.json()["reviewStatus"] == "pending"
+        reloaded = client.get(f"/interview-sessions/{session['id']}").json()
+        assert reloaded["reviewStatus"] == "ready"
+        assert reloaded["review"] is not None
+
+
 def test_last_main_question_answer_can_still_produce_follow_up(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("MOCK_INTERVIEW_AI_CONFIG_PATH", str(tmp_path / "ai-provider.json"))
     monkeypatch.setenv("MOCK_INTERVIEW_DB_PATH", str(tmp_path / "mock_interview.sqlite3"))

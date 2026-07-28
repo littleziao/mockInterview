@@ -1967,7 +1967,7 @@ function HistoryPage() {
   async function regenerateReview(record: HistoryRecord) {
     setError("");
     try {
-      const response = await fetch(`${apiBaseUrl}/interview-sessions/${record.sessionId}/review`, {
+      const response = await fetch(`${apiBaseUrl}/interview-sessions/${record.sessionId}/review?force=true`, {
         method: "POST"
       });
       if (!response.ok) {
@@ -2073,10 +2073,21 @@ function HistoryPage() {
                       </div>
                       <div className="historyItemActions">
                         {record.review ? (
-                          <button className="secondaryButton" onClick={() => setSelectedRecordId(record.id)} type="button">
-                            <Eye size={16} aria-hidden="true" />
-                            查看复盘
-                          </button>
+                          <>
+                            <button className="secondaryButton" onClick={() => setSelectedRecordId(record.id)} type="button">
+                              <Eye size={16} aria-hidden="true" />
+                              查看复盘
+                            </button>
+                            <button
+                              className="secondaryButton"
+                              disabled={generatingSessionId === record.sessionId}
+                              onClick={() => void regenerateReview(record)}
+                              type="button"
+                            >
+                              <Sparkles size={16} aria-hidden="true" />
+                              {generatingSessionId === record.sessionId ? "生成中" : "重新生成"}
+                            </button>
+                          </>
                         ) : (
                           <button
                             className="primaryButton"
