@@ -799,7 +799,7 @@ describe("App", () => {
     expect(successMessage.closest(".connectionState")).toHaveClass("success");
   });
 
-  it("展示历史记录、按目标岗位筛选并打开复盘趋势", async () => {
+  it("展示历史记录、筛选并在二级页查看复盘", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -811,40 +811,40 @@ describe("App", () => {
     expect(screen.getByLabelText("已完成面试记录列表")).toHaveTextContent("后端工程师");
     expect(screen.getByLabelText("六维能力趋势")).toHaveTextContent("专业知识准确性");
     expect(screen.getByLabelText("六维能力趋势")).toHaveTextContent("平均 4.0 / 5");
-    expect(screen.getAllByText("后端复盘：接口边界清楚，排障细节还可以加强。").length).toBeGreaterThan(0);
-    const backendConversationReview = screen.getByLabelText("逐题对话复盘");
+    // 列表页不再内嵌复盘详情
+    expect(screen.queryByLabelText("逐题对话复盘")).not.toBeInTheDocument();
+
+    // 点第一条（后端）查看复盘 → 进入二级页
+    await user.click(screen.getAllByRole("button", { name: "查看复盘" })[0]);
+    expect(await screen.findByRole("heading", { name: "历史复盘详情" })).toBeInTheDocument();
+    const backendConversationReview = await screen.findByLabelText("逐题对话复盘");
     expect(backendConversationReview).toHaveTextContent("第 1 个主问题");
     expect(backendConversationReview).toHaveTextContent("请介绍 API 设计。");
     expect(backendConversationReview).toHaveTextContent("异常路径怎么处理？");
     expect(backendConversationReview).toHaveTextContent("我会区分校验错误和 Provider 错误。");
     expect(backendConversationReview).toHaveTextContent("第 1 题：API 边界清楚。");
     expect(backendConversationReview).toHaveTextContent("示范性回答：先讲接口契约，再讲异常处理。");
-    expect(backendConversationReview).toHaveTextContent("补充点评：后续可以单独练习错误观测。");
-    expect(backendConversationReview).toHaveTextContent("补充参考：也可以按状态码分类说明。");
-    const backendSummaryReview = screen.getByLabelText("跨题总结复盘");
-    expect(backendSummaryReview).toHaveTextContent("能讲清 API 职责");
-    expect(backendSummaryReview).not.toHaveTextContent("第 1 题：API 边界清楚。");
-    expect(backendSummaryReview).not.toHaveTextContent("示范性回答：先讲接口契约，再讲异常处理。");
     const backendJdMatch = screen.getByLabelText("JD 匹配分析");
     expect(backendJdMatch).toHaveTextContent("FastAPI 项目经历匹配岗位职责");
     expect(backendJdMatch).toHaveTextContent("高并发证据不足");
+    // 二级页提供导出与返回列表
+    expect(screen.getByRole("button", { name: "复制交接摘要" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "返回列表" }));
+    expect(await screen.findByRole("heading", { name: "历史与趋势" })).toBeInTheDocument();
 
+    // 按岗位筛选
     await user.click(screen.getByRole("button", { name: "前端工程师" }));
-
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
         "/history?target_role=%E5%89%8D%E7%AB%AF%E5%B7%A5%E7%A8%8B%E5%B8%88"
       );
     });
     await waitFor(() => {
-      expect(screen.getAllByText("前端复盘：能说明页面结构，但趋势数据解释还可以更完整。").length).toBeGreaterThan(0);
+      expect(screen.getByLabelText("已完成面试记录列表")).not.toHaveTextContent("后端工程师");
     });
-    expect(screen.getByLabelText("已完成面试记录列表")).not.toHaveTextContent("后端工程师");
-    expect(screen.getByLabelText("逐题对话复盘")).toHaveTextContent("请介绍前端工作台。");
-    expect(screen.getByLabelText("逐题对话复盘")).toHaveTextContent("我负责历史与趋势页。");
   });
 
-  it("在历史与趋势页二次确认后删除完成记录并刷新列表、详情和趋势", async () => {
+  it("在历史页二次确认后删除完成记录并刷新列表与趋势", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -854,7 +854,6 @@ describe("App", () => {
     expect(screen.getByLabelText("已完成面试记录列表")).toHaveTextContent("后端工程师");
     expect(screen.getByLabelText("历史统计")).toHaveTextContent("2");
     expect(screen.getByLabelText("六维能力趋势")).toHaveTextContent("平均 4.0 / 5");
-    expect(screen.getByLabelText("历史复盘详情")).toHaveTextContent("后端复盘：接口边界清楚，排障细节还可以加强。");
 
     await user.click(screen.getByRole("button", { name: "删除后端工程师完成记录" }));
 
@@ -872,8 +871,6 @@ describe("App", () => {
       expect(screen.getByLabelText("已完成面试记录列表")).not.toHaveTextContent("后端工程师");
     });
     expect(screen.getByLabelText("历史统计")).toHaveTextContent("1");
-    expect(screen.queryByText("后端复盘：接口边界清楚，排障细节还可以加强。")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("历史复盘详情")).toHaveTextContent("前端复盘：能说明页面结构");
     expect(screen.getByLabelText("六维能力趋势")).toHaveTextContent("平均 3.0 / 5");
   });
 

@@ -12,6 +12,7 @@ import {
 import {
   Activity,
   AlertCircle,
+  ArrowLeft,
   BarChart3,
   BookOpenText,
   CheckCircle2,
@@ -269,7 +270,16 @@ type HistoryPayload = {
   trends: TrendDimension[];
 };
 
-type RouteId = "home" | "new-upload" | "new-analysis" | "new-interview" | "review" | "history" | "resume-history" | "settings";
+type RouteId =
+  | "home"
+  | "new-upload"
+  | "new-analysis"
+  | "new-interview"
+  | "review"
+  | "history"
+  | "history-review"
+  | "resume-history"
+  | "settings";
 
 const interviewStyleOptions: { value: InterviewSessionStyle; label: string }[] = [
   { value: "study", label: "学习梳理面" },
@@ -285,7 +295,7 @@ const interviewModeOptions: { value: InterviewMode; label: string }[] = [
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
 
 function routeFromHash(hash: string): RouteId {
-  switch (hash.replace(/^#/, "")) {
+  switch (hash.replace(/^#/, "").split("?")[0]) {
     case "/new/resume":
       return "new-upload";
     case "/new/analysis":
@@ -296,6 +306,8 @@ function routeFromHash(hash: string): RouteId {
       return "review";
     case "/history":
       return "history";
+    case "/history/review":
+      return "history-review";
     case "/resume-history":
       return "resume-history";
     case "/settings":
@@ -317,6 +329,8 @@ function hashForRoute(route: RouteId) {
       return "#/review";
     case "history":
       return "#/history";
+    case "history-review":
+      return "#/history/review";
     case "resume-history":
       return "#/resume-history";
     case "settings":
@@ -1891,7 +1905,6 @@ function HistoryPage() {
     trends: []
   });
   const [selectedTargetRole, setSelectedTargetRole] = useState("");
-  const [selectedRecordId, setSelectedRecordId] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isDeleting, setIsDeleting] = useState(false);
   const [pendingDeleteRecord, setPendingDeleteRecord] = useState<HistoryRecord | null>(null);
@@ -1914,12 +1927,6 @@ function HistoryPage() {
         const payload = (await response.json()) as HistoryPayload;
         if (mounted) {
           setHistory(payload);
-          setSelectedRecordId((current) => {
-            if (payload.records.some((record) => record.id === current)) {
-              return current;
-            }
-            return payload.records[0]?.id ?? null;
-          });
         }
       } catch (loadError) {
         if (mounted) {
@@ -1938,7 +1945,6 @@ function HistoryPage() {
     };
   }, [selectedTargetRole, reloadToken]);
 
-  const selectedRecord = history.records.find((record) => record.id === selectedRecordId) ?? history.records[0];
   const filteredLabel = selectedTargetRole || "全部岗位";
 
   async function deletePendingRecord() {
@@ -2062,7 +2068,7 @@ function HistoryPage() {
                   const styleLabel =
                     interviewStyleOptions.find((option) => option.value === record.style)?.label ?? "学习梳理面";
                   return (
-                    <li className={record.id === selectedRecord?.id ? "historyItem active" : "historyItem"} key={record.id}>
+                    <li className="historyItem" key={record.id}>
                       <div>
                         <strong>{record.targetRole || "由简历推断"}</strong>
                         <span>
@@ -2074,7 +2080,13 @@ function HistoryPage() {
                       <div className="historyItemActions">
                         {record.review ? (
                           <>
-                            <button className="secondaryButton" onClick={() => setSelectedRecordId(record.id)} type="button">
+                            <button
+                              className="secondaryButton"
+                              onClick={() => {
+                                window.location.hash = `#/history/review?id=${record.id}`;
+                              }}
+                              type="button"
+                            >
                               <Eye size={16} aria-hidden="true" />
                               查看复盘
                             </button>
@@ -2148,63 +2160,6 @@ function HistoryPage() {
               </div>
             </section>
           </div>
-
-          {selectedRecord ? (
-            <section className="historyReview" aria-labelledby="history-review-title">
-              {selectedRecord.review ? (
-                <>
-                  <div className="sectionHeader compact">
-                    <div>
-                      <h3 id="history-review-title">历史复盘详情</h3>
-                      <p>{selectedRecord.review.overallEvaluation}</p>
-                    </div>
-                  </div>
-                  <ReviewExportActions
-                    review={selectedRecord.review}
-                    transcript={selectedRecord.transcript}
-                    meta={{
-                      recordId: selectedRecord.id,
-                      interviewId: selectedRecord.interviewId,
-                      completedAt: selectedRecord.completedAt,
-                      targetRole: selectedRecord.targetRole,
-                      modeLabel:
-                        interviewModeOptions.find((option) => option.value === selectedRecord.interviewMode)?.label ??
-                        "单轮面试",
-                      styleLabel:
-                        interviewStyleOptions.find((option) => option.value === selectedRecord.style)?.label ??
-                        "学习梳理面",
-                      roundTitle: selectedRecord.roundTitle,
-                    }}
-                  />
-                  <div className="reviewOverview">
-                    <section className="reviewSummary" aria-labelledby="history-review-summary">
-                      <h3 id="history-review-summary">总体评价</h3>
-                      <p>{selectedRecord.review.overallEvaluation}</p>
-                    </section>
-                    <AbilityRadar scores={selectedRecord.review.abilityScores} />
-                  </div>
-                  <ReviewConversationSection review={selectedRecord.review} transcript={selectedRecord.transcript} />
-                  <JDMatchAnalysisSection review={selectedRecord.review} />
-                  <div className="reviewGrid" aria-label="跨题总结复盘">
-                    <ReviewSection items={selectedRecord.review.highlights} title="亮点" />
-                    <ReviewSection items={selectedRecord.review.mainIssues} title="主要问题" />
-                    <ReviewSection items={selectedRecord.review.improvedExpressionExamples} title="可改进表达示例" />
-                    <ReviewSection items={selectedRecord.review.knowledgeReferences} title="知识点参考" />
-                    <ReviewSection items={selectedRecord.review.learningFramework} title="学习框架" />
-                    <ReviewSection items={selectedRecord.review.nextPracticeSuggestions} title="下一次练习建议" />
-                  </div>
-                </>
-              ) : (
-                <div className="emptyRouteState">
-                  <AlertCircle size={22} aria-hidden="true" />
-                  <div>
-                    <h3 id="history-review-title">该面试复盘尚未生成</h3>
-                    <p>在左侧列表点击「生成复盘」即可（重新）生成结构化复盘。</p>
-                  </div>
-                </div>
-              )}
-            </section>
-          ) : null}
         </>
       ) : null}
 
@@ -2237,6 +2192,143 @@ function HistoryPage() {
                 确认删除
               </button>
             </div>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function readHistoryReviewId(): number | null {
+  const match = window.location.hash.match(/[?&]id=(\d+)/);
+  return match ? Number(match[1]) : null;
+}
+
+function HistoryReviewPage() {
+  const [recordId, setRecordId] = useState<number | null>(() => readHistoryReviewId());
+  const [history, setHistory] = useState<HistoryPayload>({ records: [], targetRoles: [], trends: [] });
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const onHashChange = () => setRecordId(readHistoryReviewId());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    async function loadHistory() {
+      setIsLoading(true);
+      setError("");
+      try {
+        const response = await fetch(`${apiBaseUrl}/history`);
+        if (!response.ok) {
+          throw new Error("读取历史记录失败");
+        }
+        const payload = (await response.json()) as HistoryPayload;
+        if (mounted) {
+          setHistory(payload);
+        }
+      } catch (loadError) {
+        if (mounted) {
+          setError(loadError instanceof Error ? loadError.message : "读取历史记录失败");
+        }
+      } finally {
+        if (mounted) {
+          setIsLoading(false);
+        }
+      }
+    }
+    void loadHistory();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const record = history.records.find((item) => item.id === recordId) ?? null;
+
+  return (
+    <section className="panel historyReviewPage" aria-labelledby="history-review-title">
+      <div className="sectionHeader">
+        <div>
+          <h2 id="history-review-title">历史复盘详情</h2>
+          <p>
+            {record
+              ? `${record.targetRole || "由简历推断"} · ${formatCompletedAt(record.completedAt)}`
+              : "查看单条面试的完整复盘"}
+          </p>
+        </div>
+        <div className="stepActions">
+          <button
+            className="secondaryButton"
+            onClick={() => {
+              window.location.hash = "#/history";
+            }}
+            type="button"
+          >
+            <ArrowLeft size={16} aria-hidden="true" />
+            返回列表
+          </button>
+        </div>
+      </div>
+
+      {error ? <div className="workflowMessage failure">{error}</div> : null}
+      {isLoading ? <div className="workflowMessage">正在读取复盘…</div> : null}
+
+      {!isLoading && !record ? (
+        <div className="emptyRouteState">
+          <AlertCircle size={22} aria-hidden="true" />
+          <div>
+            <h3>未找到该面试记录</h3>
+            <p>记录可能已被删除，请返回列表重新选择。</p>
+          </div>
+        </div>
+      ) : null}
+
+      {record && record.review ? (
+        <>
+          <ReviewExportActions
+            review={record.review}
+            transcript={record.transcript}
+            meta={{
+              recordId: record.id,
+              interviewId: record.interviewId,
+              completedAt: record.completedAt,
+              targetRole: record.targetRole,
+              modeLabel:
+                interviewModeOptions.find((option) => option.value === record.interviewMode)?.label ?? "单轮面试",
+              styleLabel:
+                interviewStyleOptions.find((option) => option.value === record.style)?.label ?? "学习梳理面",
+              roundTitle: record.roundTitle,
+            }}
+          />
+          <div className="reviewOverview">
+            <section className="reviewSummary" aria-labelledby="history-review-summary">
+              <h3 id="history-review-summary">总体评价</h3>
+              <p>{record.review.overallEvaluation}</p>
+            </section>
+            <AbilityRadar scores={record.review.abilityScores} />
+          </div>
+          <ReviewConversationSection review={record.review} transcript={record.transcript} />
+          <JDMatchAnalysisSection review={record.review} />
+          <div className="reviewGrid" aria-label="跨题总结复盘">
+            <ReviewSection items={record.review.highlights} title="亮点" />
+            <ReviewSection items={record.review.mainIssues} title="主要问题" />
+            <ReviewSection items={record.review.improvedExpressionExamples} title="可改进表达示例" />
+            <ReviewSection items={record.review.knowledgeReferences} title="知识点参考" />
+            <ReviewSection items={record.review.learningFramework} title="学习框架" />
+            <ReviewSection items={record.review.nextPracticeSuggestions} title="下一次练习建议" />
+          </div>
+        </>
+      ) : null}
+
+      {record && !record.review ? (
+        <div className="emptyRouteState">
+          <AlertCircle size={22} aria-hidden="true" />
+          <div>
+            <h3>该面试复盘尚未生成</h3>
+            <p>请返回列表点击「生成复盘」或「重新生成」。</p>
           </div>
         </div>
       ) : null}
@@ -3363,6 +3455,8 @@ export function App() {
           <SettingsPage />
         ) : route === "history" ? (
           <HistoryPage />
+        ) : route === "history-review" ? (
+          <HistoryReviewPage />
         ) : route === "resume-history" ? (
           <>
             <ResumeAnalysisHistory
