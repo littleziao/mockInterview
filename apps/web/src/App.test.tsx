@@ -171,6 +171,7 @@ const historyPayloadMock = {
 
 let deletedHistoryRecordIds: number[] = [];
 let deletedResumeAnalysisRecordIds: number[] = [];
+let reviewGenerationMode: "sync" | "async_pending" = "sync";
 
 // 服务端对一次回答的权威响应：transcript 同时包含用户刚提交的回答与面试官的新消息。
 // 乐观渲染测试用它作为「整体替换」的目标数据。
@@ -265,6 +266,7 @@ describe("App", () => {
     answersHandlerOverride = null;
     deletedHistoryRecordIds = [];
     deletedResumeAnalysisRecordIds = [];
+    reviewGenerationMode = "sync";
     window.location.hash = "#/";
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
@@ -613,6 +615,25 @@ describe("App", () => {
         }
 
         if (url.match(/\/interview-sessions\/\d+\/review$/) && init?.method === "POST") {
+          if (reviewGenerationMode === "async_pending") {
+            // 异步：立即返回 pending，复盘结果由前端轮询 GET 拿到（此处不模拟 ready）。
+            return Response.json({
+              id: 31,
+              interviewId: 7,
+              style: "study",
+              status: "awaiting_review",
+              reviewStatus: "pending",
+              review: null,
+              mainQuestionCount: 1,
+              currentMainQuestionFollowUps: 1,
+              mainQuestionLimit: 6,
+              followUpLimit: 2,
+              transcript: [
+                { role: "interviewer", content: "先做个自我介绍吧。", kind: "main_question", mainQuestionIndex: 0 },
+                { role: "candidate", content: "我负责简历分析和 AI Provider 接入。", kind: "", mainQuestionIndex: 0 }
+              ]
+            });
+          }
           return Response.json({
             id: 31,
             interviewId: 7,
@@ -982,6 +1003,22 @@ describe("App", () => {
         })
       );
     });
+  });
+
+  it("异步生成复盘：返回 pending 时显示生成中态且隐藏生成按钮", async () => {
+    reviewGenerationMode = "async_pending";
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "解析简历" }));
+    expect(await screen.findByRole("heading", { name: "简历解析与配置" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "确认配置并开始面试" }));
+    expect(await screen.findByRole("heading", { name: "开始面试" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "手动结束" }));
+    await user.click(await screen.findByRole("button", { name: "生成复盘" }));
+
+    expect(await screen.findByText("复盘生成中…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "生成复盘" })).not.toBeInTheDocument();
   });
 
   it("带 JD 的面试复盘展示并导出 JD 匹配分析", async () => {

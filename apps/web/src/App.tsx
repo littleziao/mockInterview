@@ -150,6 +150,7 @@ type InterviewSession = {
   roundFocus?: string;
   transcript: TranscriptMessage[];
   review?: InterviewReview | null;
+  reviewStatus?: "pending" | "ready" | "failed";
   reviewError?: string;
 };
 
@@ -791,7 +792,13 @@ function NewInterviewFlow({
       setWorkflowMessage("复盘已生成，可查看学习建议并导出 Markdown");
       onNavigateStep("review");
     } else if (nextSession.status === "awaiting_review") {
-      setWorkflowMessage("面试已结束，请确认是否生成复盘");
+      if (nextSession.reviewStatus === "pending") {
+        setWorkflowMessage("复盘生成中，请稍候…");
+      } else if (nextSession.reviewStatus === "failed") {
+        setWorkflowMessage("复盘生成失败，可点击「重新生成」重试");
+      } else {
+        setWorkflowMessage("面试已结束，请确认是否生成复盘");
+      }
     }
   }
 
@@ -1109,6 +1116,7 @@ function NewInterviewFlow({
         const detail = (await response.json().catch(() => null)) as { detail?: string } | null;
         throw new Error(detail?.detail ?? "生成复盘失败");
       }
+      // 后台异步生成：立即返回 pending，由下方轮询 useEffect 跟进 ready/failed。
       applySessionUpdate((await response.json()) as InterviewSession);
     } catch (error) {
       setInterviewError(error instanceof Error ? error.message : "生成复盘失败");
@@ -1145,6 +1153,54 @@ function NewInterviewFlow({
       mounted = false;
     };
   }, [session?.status, interviewMode, savedInterviewId]);
+
+  // 复盘异步生成：reviewStatus 为 pending 时轮询，直到 ready（自动进复盘页）或 failed（显示重试）。
+  useEffect(() => {
+    if (!session || session.reviewStatus !== "pending") {
+      return;
+    }
+    let mounted = true;
+    let stopped = false;
+    const sessionId = session.id;
+    const startedAt = Date.now();
+    const pollInterval = 3000;
+    const pollTimeout = 5 * 60 * 1000;
+
+    async function pollOnce() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/interview-sessions/${sessionId}`);
+        if (!response.ok) {
+          return;
+        }
+        const next = (await response.json()) as InterviewSession;
+        if (mounted) {
+          applySessionUpdate(next);
+        }
+      } catch {
+        // 单次轮询失败不致命，下一轮重试。
+      }
+    }
+
+    const intervalId = window.setInterval(() => {
+      if (Date.now() - startedAt > pollTimeout) {
+        stopped = true;
+        window.clearInterval(intervalId);
+        if (mounted) {
+          setInterviewError("复盘生成超时，请稍后点击「重新生成」重试");
+        }
+        return;
+      }
+      if (!stopped) {
+        void pollOnce();
+      }
+    }, pollInterval);
+
+    return () => {
+      mounted = false;
+      stopped = true;
+      window.clearInterval(intervalId);
+    };
+  }, [session?.id, session?.reviewStatus]);
 
   const nextRound = useMemo(
     () => roundsProgress.find((round) => round.status === "pending") ?? null,
@@ -2601,13 +2657,22 @@ function InterviewConversation({
           <div className="endedState">
             {awaitingReview ? "面试已结束，请确认是否生成复盘。" : "面试已结束，完整对话上下文已保留。"}
           </div>
-          {awaitingReview ? (
+          {awaitingReview && session.reviewStatus === "pending" ? (
+            <div className="workflowMessage" role="status" aria-live="polite">
+              复盘生成中…
+            </div>
+          ) : null}
+          {awaitingReview && session.reviewStatus !== "pending" ? (
             <button className="primaryButton" disabled={isGeneratingReview} onClick={onGenerateReview} type="button">
               <Sparkles size={16} aria-hidden="true" />
-              {isGeneratingReview ? "生成中" : "生成复盘"}
+              {isGeneratingReview
+                ? "生成中"
+                : session.reviewStatus === "failed"
+                  ? "重新生成"
+                  : "生成复盘"}
             </button>
           ) : null}
-          {session.reviewError ? (
+          {awaitingReview && session.reviewStatus === "failed" && session.reviewError ? (
             <div className="workflowMessage failure">复盘生成失败：{session.reviewError}</div>
           ) : null}
         </div>
