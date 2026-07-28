@@ -1840,6 +1840,33 @@ function downloadReviewMarkdown(markdown: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+async function copyReviewText(text: string): Promise<void> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  // 非安全上下文（例如 http://IP 部署）下 Clipboard API 不可用，降级到 execCommand。
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.top = "0";
+  textarea.style.left = "0";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } finally {
+    document.body.removeChild(textarea);
+  }
+  if (!ok) {
+    throw new Error("copy failed");
+  }
+}
+
 function formatCompletedAt(value: string) {
   if (!value) {
     return "时间未知";
@@ -2376,7 +2403,7 @@ function ReviewExportActions({
         kind === "handoff"
           ? buildInterviewHandoffMarkdown(input)
           : buildFullInterviewReviewMarkdown(input);
-      await navigator.clipboard.writeText(markdown);
+      await copyReviewText(markdown);
       setFeedback(
         kind === "handoff"
           ? "交接摘要已复制，可粘贴到 ChatGPT 项目会话"
