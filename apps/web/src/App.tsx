@@ -2,6 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { consumeSSEResponse } from "./sse";
 import {
+  buildFullInterviewReviewMarkdown,
+  buildInterviewHandoffMarkdown,
+  groupTranscriptByMainQuestion,
+  sanitizeMarkdownFilename,
+  type InterviewReviewMarkdownInput,
+  type InterviewReviewMeta,
+} from "./utils/interviewReviewMarkdown";
+import {
   Activity,
   AlertCircle,
   BarChart3,
@@ -129,7 +137,7 @@ type InterviewSessionStyle = "study" | "pressure";
 type InterviewMode = "single_round" | "multi_round";
 type NewInterviewStep = "upload" | "analysis" | "interview" | "review";
 
-type TranscriptMessage = {
+export type TranscriptMessage = {
   role: "interviewer" | "candidate";
   content: string;
   kind: "" | "main_question" | "follow_up" | "clarify" | "end_interview";
@@ -193,20 +201,20 @@ type ResumeContext = {
   interview: ResumedInterview;
 };
 
-type AbilityScore = {
+export type AbilityScore = {
   dimension: string;
   score: number;
   rationale: string;
 };
 
-type JDMatchAnalysis = {
+export type JDMatchAnalysis = {
   matchingEvidence: string[];
   roleGaps: string[];
   projectExpressionImprovements: string[];
   nextPracticeJdPriorities: string[];
 };
 
-type InterviewReview = {
+export type InterviewReview = {
   overallEvaluation: string;
   highlights: string[];
   mainIssues: string[];
@@ -1807,161 +1815,27 @@ function NewInterviewFlow({
   ) : null;
 }
 
-function markdownList(items: string[]) {
-  return items.length ? items.map((item) => `- ${item}`).join("\n") : "- 暂无";
-}
-
 function buildReviewQuestionSegments(transcript: TranscriptMessage[], review: InterviewReview) {
-  const segments: ReviewQuestionSegment[] = [];
-  let currentSegment: ReviewQuestionSegment | null = null;
-
-  transcript.forEach((message) => {
-    if (message.kind === "end_interview") {
-      return;
-    }
-
-    if (message.role === "interviewer" && message.kind === "main_question") {
-      currentSegment = {
-        title: `第 ${segments.length + 1} 个主问题`,
-        messages: [message],
-        questionReview: review.questionReviews[segments.length],
-        sampleAnswer: review.sampleAnswers[segments.length]
-      };
-      segments.push(currentSegment);
-      return;
-    }
-
-    if (!currentSegment) {
-      currentSegment = {
-        title: `第 ${segments.length + 1} 个主问题`,
-        messages: [],
-        questionReview: review.questionReviews[segments.length],
-        sampleAnswer: review.sampleAnswers[segments.length]
-      };
-      segments.push(currentSegment);
-    }
-
-    currentSegment.messages.push(message);
-  });
-
+  const groups = groupTranscriptByMainQuestion(transcript);
+  const segments: ReviewQuestionSegment[] = groups.map((group, index) => ({
+    title: group.title,
+    messages: group.messages,
+    questionReview: review.questionReviews[index],
+    sampleAnswer: review.sampleAnswers[index],
+  }));
   return {
     segments,
-    supplementalQuestionReviews: review.questionReviews.slice(segments.length),
-    supplementalSampleAnswers: review.sampleAnswers.slice(segments.length)
+    supplementalQuestionReviews: review.questionReviews.slice(groups.length),
+    supplementalSampleAnswers: review.sampleAnswers.slice(groups.length),
   };
 }
 
-function markdownReviewConversation(transcript: TranscriptMessage[], review: InterviewReview) {
-  const { segments, supplementalQuestionReviews, supplementalSampleAnswers } = buildReviewQuestionSegments(
-    transcript,
-    review
-  );
-
-  const segmentMarkdown = segments.map((segment) => {
-    const messages = segment.messages
-      .map((message) => {
-        const speaker = message.role === "interviewer" ? `面试官（${transcriptKindLabel(message.kind)}）` : "我的回答";
-        return `- **${speaker}**：${message.content}`;
-      })
-      .join("\n");
-
-    return [
-      `### ${segment.title}`,
-      messages || "- 暂无对话记录",
-      segment.questionReview ? `\n**逐题点评**：${segment.questionReview}` : "",
-      segment.sampleAnswer ? `\n**参考答案**：${segment.sampleAnswer}` : ""
-    ]
-      .filter(Boolean)
-      .join("\n");
-  });
-
-  if (supplementalQuestionReviews.length) {
-    segmentMarkdown.push(["### 补充逐题点评", markdownList(supplementalQuestionReviews)].join("\n"));
-  }
-
-  if (supplementalSampleAnswers.length) {
-    segmentMarkdown.push(["### 补充参考答案", markdownList(supplementalSampleAnswers)].join("\n"));
-  }
-
-  return segmentMarkdown.length ? segmentMarkdown.join("\n\n") : "- 暂无对话记录";
-}
-
-function buildReviewMarkdown({
-  modeLabel,
-  review,
-  session,
-  styleLabel,
-  targetRole
-}: {
-  modeLabel: string;
-  review: InterviewReview;
-  session: InterviewSession;
-  styleLabel: string;
-  targetRole: string;
-}) {
-  const jdMatchMarkdown = review.jdMatchAnalysis
-    ? [
-        "## JD 匹配分析",
-        "",
-        "### 匹配证据",
-        markdownList(review.jdMatchAnalysis.matchingEvidence),
-        "",
-        "### 暴露的岗位缺口",
-        markdownList(review.jdMatchAnalysis.roleGaps),
-        "",
-        "### 项目表达如何更贴 JD",
-        markdownList(review.jdMatchAnalysis.projectExpressionImprovements),
-        "",
-        "### 下轮优先补齐的 JD 要求",
-        markdownList(review.jdMatchAnalysis.nextPracticeJdPriorities),
-        ""
-      ]
-    : [];
-
-  return [
-    "# 模拟面试复盘",
-    "",
-    `- 目标岗位：${targetRole || "由简历推断"}`,
-    `- 面试模式：${modeLabel}`,
-    `- 面试风格：${styleLabel}`,
-    "",
-    "## 总体评价",
-    review.overallEvaluation,
-    "",
-    "## 亮点",
-    markdownList(review.highlights),
-    "",
-    "## 主要问题",
-    markdownList(review.mainIssues),
-    "",
-    "## 可改进表达示例",
-    markdownList(review.improvedExpressionExamples),
-    "",
-    "## 知识点参考",
-    markdownList(review.knowledgeReferences),
-    "",
-    "## 学习框架",
-    markdownList(review.learningFramework),
-    "",
-    "## 下一次练习建议",
-    markdownList(review.nextPracticeSuggestions),
-    "",
-    ...jdMatchMarkdown,
-    "## 六维能力评分",
-    review.abilityScores.map((score) => `- ${score.dimension}：${score.score}/5，${score.rationale}`).join("\n"),
-    "",
-    "## 逐题对话复盘",
-    markdownReviewConversation(session.transcript, review),
-    ""
-  ].join("\n");
-}
-
-function downloadReviewMarkdown(markdown: string) {
+function downloadReviewMarkdown(markdown: string, filename: string) {
   const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `mock-interview-review-${new Date().toISOString().slice(0, 10)}.md`;
+  link.download = filename;
   link.click();
   URL.revokeObjectURL(url);
 }
@@ -2247,6 +2121,23 @@ function HistoryPage() {
                       <p>{selectedRecord.review.overallEvaluation}</p>
                     </div>
                   </div>
+                  <ReviewExportActions
+                    review={selectedRecord.review}
+                    transcript={selectedRecord.transcript}
+                    meta={{
+                      recordId: selectedRecord.id,
+                      interviewId: selectedRecord.interviewId,
+                      completedAt: selectedRecord.completedAt,
+                      targetRole: selectedRecord.targetRole,
+                      modeLabel:
+                        interviewModeOptions.find((option) => option.value === selectedRecord.interviewMode)?.label ??
+                        "单轮面试",
+                      styleLabel:
+                        interviewStyleOptions.find((option) => option.value === selectedRecord.style)?.label ??
+                        "学习梳理面",
+                      roundTitle: selectedRecord.roundTitle,
+                    }}
+                  />
                   <div className="reviewOverview">
                     <section className="reviewSummary" aria-labelledby="history-review-summary">
                       <h3 id="history-review-summary">总体评价</h3>
@@ -2460,6 +2351,77 @@ function ReviewConversationSection({
   );
 }
 
+function ReviewExportActions({
+  review,
+  transcript,
+  meta,
+}: {
+  review: InterviewReview;
+  transcript: TranscriptMessage[];
+  meta: InterviewReviewMeta;
+}) {
+  const [feedback, setFeedback] = useState("");
+  const [busy, setBusy] = useState(false);
+  const input: InterviewReviewMarkdownInput = { review, transcript, meta };
+  const date = (meta.completedAt || new Date().toISOString()).slice(0, 10);
+  const filename =
+    sanitizeMarkdownFilename(
+      [date, meta.targetRole, meta.projectName, meta.modeLabel].filter(Boolean).join("_")
+    ) + ".md";
+
+  async function copyMarkdown(kind: "handoff" | "full") {
+    setBusy(true);
+    try {
+      const markdown =
+        kind === "handoff"
+          ? buildInterviewHandoffMarkdown(input)
+          : buildFullInterviewReviewMarkdown(input);
+      await navigator.clipboard.writeText(markdown);
+      setFeedback(
+        kind === "handoff"
+          ? "交接摘要已复制，可粘贴到 ChatGPT 项目会话"
+          : "完整 Markdown 已复制"
+      );
+    } catch {
+      setFeedback("复制失败，请检查浏览器剪贴板权限");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleDownload() {
+    setBusy(true);
+    try {
+      downloadReviewMarkdown(buildFullInterviewReviewMarkdown(input), filename);
+      setFeedback("Markdown 已下载");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="reviewExportActions" aria-label="复盘导出操作">
+      <button className="secondaryButton" disabled={busy} onClick={() => void copyMarkdown("handoff")} type="button">
+        <ClipboardList size={16} aria-hidden="true" />
+        复制交接摘要
+      </button>
+      <button className="secondaryButton" disabled={busy} onClick={() => void copyMarkdown("full")} type="button">
+        <FileText size={16} aria-hidden="true" />
+        复制完整 Markdown
+      </button>
+      <button className="primaryButton" disabled={busy} onClick={handleDownload} type="button">
+        <Download size={16} aria-hidden="true" />
+        下载 Markdown
+      </button>
+      {feedback ? (
+        <span className="exportFeedback" role="status" aria-live="polite">
+          {feedback}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function ReviewPage({
   isStartingNextRound,
   modeLabel,
@@ -2485,7 +2447,13 @@ function ReviewPage({
   styleLabel: string;
   targetRole: string;
 }) {
-  const markdown = buildReviewMarkdown({ modeLabel, review, session, styleLabel, targetRole });
+  const reviewMeta: InterviewReviewMeta = {
+    interviewId: session.interviewId,
+    targetRole,
+    modeLabel,
+    styleLabel,
+    roundTitle: session.roundTitle,
+  };
   const showRoundNavigation = Boolean(nextRound) || multiRoundCompleted;
 
   return (
@@ -2500,12 +2468,10 @@ function ReviewPage({
             <MessagesSquare size={16} aria-hidden="true" />
             查看对话
           </button>
-          <button className="primaryButton" onClick={() => downloadReviewMarkdown(markdown)} type="button">
-            <Download size={16} aria-hidden="true" />
-            导出 Markdown
-          </button>
         </div>
       </div>
+
+      <ReviewExportActions review={review} transcript={session.transcript} meta={reviewMeta} />
 
       {showRoundNavigation ? (
         <div className="nextRoundBanner" aria-label="多轮面试进度">

@@ -963,7 +963,7 @@ describe("App", () => {
     expect(screen.getByLabelText("跨题总结复盘")).not.toHaveTextContent("示范性回答：这是一种可参考表达，不是唯一标准答案。");
     expect(screen.queryByLabelText("JD 匹配分析")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "导出 Markdown" }));
+    await user.click(screen.getByRole("button", { name: "下载 Markdown" }));
 
     expect(URL.createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:mock-review");
@@ -1040,7 +1040,7 @@ describe("App", () => {
     expect(jdMatch).toHaveTextContent("练习复杂场景排障表达");
     expect(screen.getByLabelText("六维能力评分雷达图")).toHaveTextContent("岗位匹配度");
 
-    await user.click(screen.getByRole("button", { name: "导出 Markdown" }));
+    await user.click(screen.getByRole("button", { name: "下载 Markdown" }));
     const blob = vi.mocked(URL.createObjectURL).mock.calls.at(-1)?.[0] as Blob;
     const markdown = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
