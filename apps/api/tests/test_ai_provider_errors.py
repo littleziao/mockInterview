@@ -6,6 +6,7 @@ from apps.api.app.ai_provider import (
     OpenAICompatibleProvider,
 )
 from apps.api.app.ai_settings import AIProviderSettings
+from apps.api.app.interview_session import TranscriptMessage
 
 
 def _provider() -> OpenAICompatibleProvider:
@@ -18,6 +19,28 @@ def _provider() -> OpenAICompatibleProvider:
             model="mock-model",
         )
     )
+
+
+def test_review_transcript_grouped_by_main_question_for_prompt() -> None:
+    transcript = [
+        TranscriptMessage(role="interviewer", content="主问题1", kind="main_question", main_question_index=0),
+        TranscriptMessage(role="candidate", content="回答1", kind="", main_question_index=0),
+        TranscriptMessage(role="interviewer", content="追问1", kind="follow_up", main_question_index=0),
+        TranscriptMessage(role="candidate", content="回答追问1", kind="", main_question_index=0),
+        TranscriptMessage(role="interviewer", content="主问题2", kind="main_question", main_question_index=1),
+        TranscriptMessage(role="candidate", content="回答2", kind="", main_question_index=1),
+        TranscriptMessage(role="interviewer", content="本场面试信息已足够。", kind="end_interview", main_question_index=1),
+    ]
+    text, outline = _provider()._format_review_transcript_by_main_question(transcript)
+
+    assert outline == ["主问题1", "主问题2"]
+    assert "【第 1 个主问题】主问题1" in text
+    assert "【第 2 个主问题】主问题2" in text
+    # 追问归入第 1 个主问题段（出现在「第 2 个主问题」之前）
+    assert text.index("追问1") < text.index("【第 2 个主问题】")
+    assert "回答追问1" in text
+    # end_interview 收尾不作为独立题目，不进入分段文本
+    assert "本场面试信息已足够。" not in text
 
 
 def test_provider_http_error_includes_model_error_body(monkeypatch) -> None:
